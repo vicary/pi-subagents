@@ -1,23 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-	DEFAULT_ASYNC_TIMEOUT_MS,
-	DEFAULT_FOREGROUND_TIMEOUT_MS,
 	resolveConfigDefaultTimeoutMs,
 	resolveSingleAgentLaunchTimeout,
 } from "../../src/runs/foreground/subagent-executor.ts";
 
 describe("single-agent launch timeout wiring", () => {
-	it("async runs default to DEFAULT_ASYNC_TIMEOUT_MS when no explicit/agent timeout", () => {
-		assert.deepEqual(resolveSingleAgentLaunchTimeout({}, true), {
-			timeoutMs: DEFAULT_ASYNC_TIMEOUT_MS,
-		});
-	});
-
-	it("foreground runs default to DEFAULT_FOREGROUND_TIMEOUT_MS when no explicit/agent timeout", () => {
-		assert.deepEqual(resolveSingleAgentLaunchTimeout({}, false), {
-			timeoutMs: DEFAULT_FOREGROUND_TIMEOUT_MS,
-		});
+	it("leaves async and foreground runs unbounded when no deadline is configured", () => {
+		assert.deepEqual(resolveSingleAgentLaunchTimeout({}, true), {});
+		assert.deepEqual(resolveSingleAgentLaunchTimeout({}, false), {});
 	});
 
 	it("explicit timeoutMs wins over the async default", () => {
