@@ -1246,7 +1246,8 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 			revivedId = result.details?.asyncId;
 			assert.ok(revivedId);
 			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
-			await waitForFile(resultPath);
+			// This observes runner startup, native Git worktree setup and patch capture too.
+			await waitForFile(resultPath, process.platform === "win32" ? 30_000 : 10_000);
 			const status = await waitForStatus(path.join(ASYNC_DIR, revivedId, "status.json"), (candidate) => candidate.state === "complete");
 			assert.equal(fs.existsSync(path.join(tempDir, "feature.txt")), false);
 			assert.equal(status.parallelHandoff?.changedPatches, 1);
