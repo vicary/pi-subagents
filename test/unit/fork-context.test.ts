@@ -211,6 +211,46 @@ describe("createForkContextResolver", () => {
 		}
 	});
 
+	it("uses configured per-index roots without changing the persisted parent", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-configured-root-"));
+		try {
+			const parentDir = path.join(tempDir, "parent-sessions");
+			const configuredRoot = path.join(tempDir, "configured-child-sessions", "async-run-id");
+			const parent = SessionManager.create(tempDir, parentDir);
+			parent.appendMessage({ role: "user", content: "parent prompt" });
+			parent.appendMessage({ role: "assistant", content: "parent response" });
+			const parentSessionFile = parent.getSessionFile();
+			const leafId = parent.getLeafId();
+
+			assert.ok(parentSessionFile);
+			assert.ok(leafId);
+			const parentBytes = fs.readFileSync(parentSessionFile);
+			const resolver = createForkContextResolver({
+				getSessionFile: () => parentSessionFile,
+				getLeafId: () => leafId,
+			}, "fork", {
+				runDirName: () => "async-run-id",
+				sessionDirForIndex: (index = 0) => path.join(configuredRoot, `run-${index}`),
+			});
+
+			const childSessionFiles = [resolver.sessionFileForIndex(0), resolver.sessionFileForIndex(1)];
+			assert.deepEqual(
+				childSessionFiles.map((file) => path.dirname(file!)),
+				[path.join(configuredRoot, "run-0"), path.join(configuredRoot, "run-1")],
+			);
+			assert.notEqual(childSessionFiles[0], childSessionFiles[1]);
+			assert.deepEqual(fs.readFileSync(parentSessionFile), parentBytes);
+			for (const childSessionFile of childSessionFiles) {
+				assert.ok(childSessionFile);
+				assert.equal(fs.existsSync(childSessionFile), true);
+				const header = JSON.parse(fs.readFileSync(childSessionFile, "utf-8").split("\n")[0]);
+				assert.equal(header.parentSession, parentSessionFile);
+			}
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("fails clearly when the parent session file is missing", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-user-only-"));
 		try {
