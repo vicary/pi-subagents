@@ -84,6 +84,22 @@ describe("headless background-work auto-drain", () => {
 		assert.ok((waits[1]!.timeoutMs ?? 0) < (waits[0]!.timeoutMs ?? 0), "each wait must share one absolute deadline");
 	});
 
+	it("keeps draining beyond the default observation window without an implicit deadline", async () => {
+		let clock = 0;
+		let waits = 0;
+		await drainOutstandingWork({
+			state: state(),
+			now: () => clock,
+			hasWork: () => waits < 2,
+			wait: async () => {
+				clock += 30 * 60 * 1000 + 1;
+				waits++;
+				return waitResult("Wait window elapsed; work remains active.", false, true);
+			},
+		});
+		assert.equal(waits, 2);
+	});
+
 	it("preserves wait errors instead of treating them as a successful drain", async () => {
 		await assert.rejects(() => drainOutstandingWork({
 			state: state(),
