@@ -20,6 +20,7 @@ import {
 	type RuntimeAcknowledgedExtensions, type RunSyncResult, type ExecutorToolResult,
 } from "../support/single-execution-fixture.ts";
 import assert from "node:assert/strict";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -1688,6 +1689,81 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 			assert.equal(started?.child.model, "openai/gpt-5-mini");
 			assert.equal(started?.child.thinking, "high");
 			assert.deepEqual(started?.child.steps, [{ agent: "echo", status: "running", model: "openai/gpt-5-mini", thinking: "high" }]);
+		} finally {
+			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+		}
+	});
+
+	it("retains and resumes a terminal nested fork under the configured session root", async () => {
+		const route = createNestedRoute("nested-fork-root");
+		const parentDir = path.join(tempDir, "nested-parent-sessions");
+		const defaultSessionDir = path.join(tempDir, "nested-configured-sessions");
+		const nestedRunId = "nested-fork-canonical-id";
+		const parent = SessionManager.create(tempDir, parentDir);
+		parent.appendMessage({ role: "user", content: "parent prompt" });
+		parent.appendMessage({ role: "assistant", content: "parent response" });
+		const parentSessionFile = parent.getSessionFile();
+		assert.ok(parentSessionFile);
+		const parentBytes = fs.readFileSync(parentSessionFile);
+		const childRuntime: ChildRuntimeConfig = {
+			fanoutChild: true,
+			depth: 1,
+			maxDepth: 3,
+			waitTool: { enabled: true },
+			fast: false,
+			nestedRoute: route,
+			nestedParent: { parentRunId: route.rootRunId, parentChildIndex: 0, depth: 1, path: [] },
+		};
+		const executor = makeExecutor([makeAgent("echo")], { defaultSessionDir }, false, undefined, false, new Map(), undefined, undefined, createEventBus(), undefined, childRuntime);
+		const ctx = { ...makeMinimalCtx(tempDir), sessionManager: parent };
+		const terminalRecords = () => fs.readdirSync(route.eventSink)
+			.sort()
+			.flatMap((name) => parseNestedEventRecords(fs.readFileSync(path.join(route.eventSink, name), "utf-8"), route));
+		try {
+			mockPi.onCall({ output: "nested terminal output" });
+			const launched = await executor.execute(
+				"nested-fork-terminal",
+				{ agent: "echo", task: "Complete nested fork", async: true, context: "fork", workflowChildAsyncId: nestedRunId, acceptance: false },
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			assert.equal(launched.isError, undefined, launched.content[0]?.text);
+			assert.equal(launched.details.asyncId, nestedRunId);
+			let records = terminalRecords();
+			for (let attempt = 0; attempt < 250 && !records.some((record) => record.type === "subagent.nested.completed" && record.child.id === nestedRunId); attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				records = terminalRecords();
+			}
+			const terminal = records.find((record) => record.type === "subagent.nested.completed" && record.child.id === nestedRunId);
+			assert.ok(terminal);
+			const forkedSessionFile = terminal.child.sessionFile;
+			assert.ok(forkedSessionFile);
+			assert.equal(path.dirname(forkedSessionFile), path.join(defaultSessionDir, nestedRunId, "run-0"));
+			assert.equal(fs.existsSync(forkedSessionFile), true);
+			assert.deepEqual(fs.readFileSync(parentSessionFile), parentBytes);
+
+			mockPi.onCall({ output: "nested resumed output" });
+			const resumed = await executor.execute(
+				"nested-fork-resume",
+				{ action: "resume", id: nestedRunId, message: "Continue from the retained nested fork." },
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			assert.equal(resumed.isError, undefined, resumed.content[0]?.text);
+
+			fs.rmSync(forkedSessionFile);
+			const missing = await executor.execute(
+				"nested-fork-missing",
+				{ action: "resume", id: nestedRunId, message: "This must refuse after the nested transcript is removed." },
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			assert.equal(missing.isError, true);
+			assert.match(missing.content[0]?.text ?? "", /not found|does not exist|session/i);
+			assert.deepEqual(fs.readFileSync(parentSessionFile), parentBytes);
 		} finally {
 			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
 		}

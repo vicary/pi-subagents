@@ -1,0 +1,299 @@
+diff --git a/src/runs/foreground/subagent-executor.ts b/src/runs/foreground/subagent-executor.ts
+index c1f6fd3e..2b3f35f5 100644
+--- a/src/runs/foreground/subagent-executor.ts
++++ b/src/runs/foreground/subagent-executor.ts
+@@ -7705,6 +7705,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
+ 		// blocks are stripped from the inherited transcript by the resolver (they are bound
+ 		// to the parent session), which is not a reason to disable the child's own reasoning.
+ 		let sessionRunId: string | undefined;
++		let sessionDirForIndex: (index?: number) => string;
+ 		try {
+ 			assertLaunchableAgentsAllowedBeforeFork();
+ 			const pruneSession = contextPolicy.usesFork && deps.config.forkContext?.mode === "pruned"
+@@ -7719,6 +7720,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
+ 						if (!sessionRunId) throw new Error("A fork session was requested before the launch's run id was assigned.");
+ 						return sessionRunId;
+ 					},
++					...(effectiveParams.sessionDir || deps.config.defaultSessionDir
++						? { sessionDirForIndex: (index?: number) => sessionDirForIndex(index) }
++						: {}),
+ 				},
+ 			);
+ 			prepareForkSessionForIndex = forkContextResolver.prepareSessionForIndex;
+@@ -7845,7 +7849,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
+ 				contextPolicy.contextSummary,
+ 			);
+ 		}
+-		const sessionDirForIndex = (idx?: number) =>
++		sessionDirForIndex = (idx?: number) =>
+ 			path.join(sessionRoot, `run-${idx ?? 0}`);
+ 		const forkSessionFileForTask: ForkSessionFileForTask = (agentName, idx = 0) => {
+ 			if (!shouldForkAgent(contextPolicy, agentName)) return undefined;
+diff --git a/src/shared/fork-context.ts b/src/shared/fork-context.ts
+index 59714f77..3bd1f037 100644
+--- a/src/shared/fork-context.ts
++++ b/src/shared/fork-context.ts
+@@ -51,6 +51,8 @@ interface ForkContextResolverOptions {
+ 	pruneSession?: (sessionFile: string) => Promise<void>;
+ 	/** Run id that names this launch's fork directory, read when the first fork is created. */
+ 	runDirName: () => string;
++	/** Optional per-child branch directory; preserves the parent-derived layout when omitted. */
++	sessionDirForIndex?: (index?: number) => string;
+ }
+ 
+ interface ForkContextResolver {
+@@ -173,19 +175,13 @@ export function createForkContextResolver(
+ 	const openSession = options.openSession
+ 		?? sessionManager.openSession
+ 		?? ((file: string, dir?: string) => SessionManager.open(file, dir));
+-	// Fork files must not land in the parent's top-level session directory.
++	// The default keeps fork files out of the parent's top-level session directory.
+ 	// Pi's recent-session discovery (`pi -c` → findMostRecentSession) is
+ 	// non-recursive and picks the largest-mtime *.jsonl in that directory, so
+-	// a still-running forked subagent — which keeps appending after the parent
+-	// went idle — would hijack the next `pi -c` away from the conversation the
+-	// user actually left. Nesting fork sessions in a per-parent directory keeps
+-	// them invisible to that discovery; the `parentSession` header still
+-	// records the tree relationship. The directory mirrors
+-	// getSubagentSessionRoot() plus a "forks" level so fork files never sit
+-	// loose next to run-N/ result directories. Derived from the file path
+-	// rather than getSessionDir() so it also works when the manager cannot
+-	// report its directory.
+-	const forksDir = path.join(
++	// a still-running forked subagent must not become that session. Callers that
++	// already selected an isolated per-child root use it instead; the official
++	// parentSession header still records the branch relationship.
++	const defaultForksDir = path.join(
+ 		path.dirname(parentSessionFile),
+ 		path.basename(parentSessionFile, ".jsonl"),
+ 		"forks",
+@@ -202,7 +198,7 @@ export function createForkContextResolver(
+ 				throw new Error(`Parent session file does not exist: ${parentSessionFile}. Pi has not persisted enough history to fork yet.`);
+ 			}
+ 			// Nested resume accepts a session file only under a directory named by the run's id.
+-			const sessionDir = path.join(forksDir, options.runDirName());
++			const sessionDir = options.sessionDirForIndex?.(index) ?? path.join(defaultForksDir, options.runDirName());
+ 			const sourceManager = openSession(parentSessionFile, sessionDir);
+ 			const sessionFile = sourceManager.createBranchedSession(leafId);
+ 			if (!sessionFile) {
+diff --git a/test/integration/async-execution.part-1.test.ts b/test/integration/async-execution.part-1.test.ts
+index 314b8d28..a64fa106 100644
+--- a/test/integration/async-execution.part-1.test.ts
++++ b/test/integration/async-execution.part-1.test.ts
+@@ -1162,6 +1162,58 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
+ 		assert.equal(status.steps?.[0]?.sessionFile, path.join(tempDir, "parent-fork-layout", "forks", id, "forked.jsonl"));
+ 	});
+ 
++	it("keeps direct background forks under configured or per-call run roots", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
++		mockPi.onCall({ output: "configured fork layout" });
++		const parentSessionFile = path.join(tempDir, "configured-parent-fork-layout.jsonl");
++		const defaultSessionDir = path.join(tempDir, "configured-fork-sessions");
++		const explicitSessionDir = path.join(tempDir, "explicit-fork-sessions");
++		const sessionHeader = JSON.stringify({ type: "session", cwd: fs.realpathSync(tempDir) });
++		fs.writeFileSync(parentSessionFile, `${sessionHeader}\n`, "utf-8");
++		const ctx = {
++			...makeMinimalCtx(tempDir),
++			sessionManager: {
++				getSessionId: () => "configured-session-fork-layout",
++				getSessionFile: () => parentSessionFile,
++				getLeafId: () => "leaf-current",
++				openSession: (_file: string, sessionDir: string) => ({
++					createBranchedSession: () => {
++						const forkedSessionFile = path.join(sessionDir, "forked.jsonl");
++						fs.mkdirSync(sessionDir, { recursive: true });
++						fs.writeFileSync(forkedSessionFile, `${sessionHeader}\n`, "utf-8");
++						return forkedSessionFile;
++					},
++				}),
++			},
++		};
++		const executor = makeAsyncExecutor([makeAgent("worker")], { defaultSessionDir });
++
++		const configured = await executor.execute(
++			"async-fork-configured-session-root",
++			{ agent: "worker", task: "Report", async: true, context: "fork", acceptance: false },
++			new AbortController().signal,
++			undefined,
++			ctx,
++		) as AsyncExecutionResult;
++		assert.equal(configured.isError, undefined, configured.content[0]?.text);
++		const configuredId = configured.details.asyncId!;
++		await readAsyncPayload(configuredId);
++		const configuredStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, configuredId, "status.json"), "utf-8")) as AsyncStatusPayload;
++		assert.equal(configuredStatus.steps?.[0]?.sessionFile, path.join(defaultSessionDir, configuredId, "run-0", "forked.jsonl"));
++
++		const explicit = await executor.execute(
++			"async-fork-explicit-session-root",
++			{ agent: "worker", task: "Report again", async: true, context: "fork", sessionDir: explicitSessionDir, acceptance: false },
++			new AbortController().signal,
++			undefined,
++			ctx,
++		) as AsyncExecutionResult;
++		assert.equal(explicit.isError, undefined, explicit.content[0]?.text);
++		const explicitId = explicit.details.asyncId!;
++		await readAsyncPayload(explicitId);
++		const explicitStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, explicitId, "status.json"), "utf-8")) as AsyncStatusPayload;
++		assert.equal(explicitStatus.steps?.[0]?.sessionFile, path.join(explicitSessionDir, explicitId, "run-0", "forked.jsonl"));
++	});
++
+ 	it("launches foreground and background children with the parent session's project trust", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+ 		const executor = makeAsyncExecutor([makeAgent("worker")]);
+ 		const ctx = { ...makeMinimalCtx(tempDir), isProjectTrusted: () => false };
+diff --git a/test/integration/single-execution.part-2.test.ts b/test/integration/single-execution.part-2.test.ts
+index 5bd4b7ab..8b7ba4c7 100644
+--- a/test/integration/single-execution.part-2.test.ts
++++ b/test/integration/single-execution.part-2.test.ts
+@@ -20,6 +20,7 @@ import {
+ 	type RuntimeAcknowledgedExtensions, type RunSyncResult, type ExecutorToolResult,
+ } from "../support/single-execution-fixture.ts";
+ import assert from "node:assert/strict";
++import { SessionManager } from "@earendil-works/pi-coding-agent";
+ import * as fs from "node:fs";
+ import * as path from "node:path";
+ import { execFileSync } from "node:child_process";
+@@ -1693,6 +1694,81 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+ 		}
+ 	});
+ 
++	it("retains and resumes a terminal nested fork under the configured session root", async () => {
++		const route = createNestedRoute("nested-fork-root");
++		const parentDir = path.join(tempDir, "nested-parent-sessions");
++		const defaultSessionDir = path.join(tempDir, "nested-configured-sessions");
++		const nestedRunId = "nested-fork-canonical-id";
++		const parent = SessionManager.create(tempDir, parentDir);
++		parent.appendMessage({ role: "user", content: "parent prompt" });
++		parent.appendMessage({ role: "assistant", content: "parent response" });
++		const parentSessionFile = parent.getSessionFile();
++		assert.ok(parentSessionFile);
++		const parentBytes = fs.readFileSync(parentSessionFile);
++		const childRuntime: ChildRuntimeConfig = {
++			fanoutChild: true,
++			depth: 1,
++			maxDepth: 3,
++			waitTool: { enabled: true },
++			fast: false,
++			nestedRoute: route,
++			nestedParent: { parentRunId: route.rootRunId, parentChildIndex: 0, depth: 1, path: [] },
++		};
++		const executor = makeExecutor([makeAgent("echo")], { defaultSessionDir }, false, undefined, false, new Map(), undefined, undefined, createEventBus(), undefined, childRuntime);
++		const ctx = { ...makeMinimalCtx(tempDir), sessionManager: parent };
++		const terminalRecords = () => fs.readdirSync(route.eventSink)
++			.sort()
++			.flatMap((name) => parseNestedEventRecords(fs.readFileSync(path.join(route.eventSink, name), "utf-8"), route));
++		try {
++			mockPi.onCall({ output: "nested terminal output" });
++			const launched = await executor.execute(
++				"nested-fork-terminal",
++				{ agent: "echo", task: "Complete nested fork", async: true, context: "fork", workflowChildAsyncId: nestedRunId, acceptance: false },
++				new AbortController().signal,
++				undefined,
++				ctx,
++			);
++			assert.equal(launched.isError, undefined, launched.content[0]?.text);
++			assert.equal(launched.details.asyncId, nestedRunId);
++			let records = terminalRecords();
++			for (let attempt = 0; attempt < 250 && !records.some((record) => record.type === "subagent.nested.completed" && record.child.id === nestedRunId); attempt++) {
++				await new Promise((resolve) => setTimeout(resolve, 20));
++				records = terminalRecords();
++			}
++			const terminal = records.find((record) => record.type === "subagent.nested.completed" && record.child.id === nestedRunId);
++			assert.ok(terminal);
++			const forkedSessionFile = terminal.child.sessionFile;
++			assert.ok(forkedSessionFile);
++			assert.equal(path.dirname(forkedSessionFile), path.join(defaultSessionDir, nestedRunId, "run-0"));
++			assert.equal(fs.existsSync(forkedSessionFile), true);
++			assert.deepEqual(fs.readFileSync(parentSessionFile), parentBytes);
++
++			mockPi.onCall({ output: "nested resumed output" });
++			const resumed = await executor.execute(
++				"nested-fork-resume",
++				{ action: "resume", id: nestedRunId, message: "Continue from the retained nested fork." },
++				new AbortController().signal,
++				undefined,
++				ctx,
++			);
++			assert.equal(resumed.isError, undefined, resumed.content[0]?.text);
++
++			fs.rmSync(forkedSessionFile);
++			const missing = await executor.execute(
++				"nested-fork-missing",
++				{ action: "resume", id: nestedRunId, message: "This must refuse after the nested transcript is removed." },
++				new AbortController().signal,
++				undefined,
++				ctx,
++			);
++			assert.equal(missing.isError, true);
++			assert.match(missing.content[0]?.text ?? "", /not found|does not exist|session/i);
++			assert.deepEqual(fs.readFileSync(parentSessionFile), parentBytes);
++		} finally {
++			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
++		}
++	});
++
+ 	it("completes no-edit foreground runs independently of task prose and tool capability", async () => {
+ 		const cleanRepo = path.join(tempDir, "no-edit-clean-repo");
+ 		fs.mkdirSync(cleanRepo);
+diff --git a/test/unit/fork-context.test.ts b/test/unit/fork-context.test.ts
+index e377b58b..28e83b15 100644
+--- a/test/unit/fork-context.test.ts
++++ b/test/unit/fork-context.test.ts
+@@ -211,6 +211,46 @@ describe("createForkContextResolver", () => {
+ 		}
+ 	});
+ 
++	it("uses configured per-index roots without changing the persisted parent", () => {
++		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-configured-root-"));
++		try {
++			const parentDir = path.join(tempDir, "parent-sessions");
++			const configuredRoot = path.join(tempDir, "configured-child-sessions", "async-run-id");
++			const parent = SessionManager.create(tempDir, parentDir);
++			parent.appendMessage({ role: "user", content: "parent prompt" });
++			parent.appendMessage({ role: "assistant", content: "parent response" });
++			const parentSessionFile = parent.getSessionFile();
++			const leafId = parent.getLeafId();
++
++			assert.ok(parentSessionFile);
++			assert.ok(leafId);
++			const parentBytes = fs.readFileSync(parentSessionFile);
++			const resolver = createForkContextResolver({
++				getSessionFile: () => parentSessionFile,
++				getLeafId: () => leafId,
++			}, "fork", {
++				runDirName: () => "async-run-id",
++				sessionDirForIndex: (index = 0) => path.join(configuredRoot, `run-${index}`),
++			});
++
++			const childSessionFiles = [resolver.sessionFileForIndex(0), resolver.sessionFileForIndex(1)];
++			assert.deepEqual(
++				childSessionFiles.map((file) => path.dirname(file!)),
++				[path.join(configuredRoot, "run-0"), path.join(configuredRoot, "run-1")],
++			);
++			assert.notEqual(childSessionFiles[0], childSessionFiles[1]);
++			assert.deepEqual(fs.readFileSync(parentSessionFile), parentBytes);
++			for (const childSessionFile of childSessionFiles) {
++				assert.ok(childSessionFile);
++				assert.equal(fs.existsSync(childSessionFile), true);
++				const header = JSON.parse(fs.readFileSync(childSessionFile, "utf-8").split("\n")[0]);
++				assert.equal(header.parentSession, parentSessionFile);
++			}
++		} finally {
++			fs.rmSync(tempDir, { recursive: true, force: true });
++		}
++	});
++
+ 	it("fails clearly when the parent session file is missing", () => {
+ 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-user-only-"));
+ 		try {
+diff --git a/install.mjs b/install.mjs
+index a2013309..7aef7c4e 100755
+--- a/install.mjs
++++ b/install.mjs
+@@ -14,7 +14,7 @@ import * as path from "node:path";
+ import * as os from "node:os";
+ 
+ const EXTENSION_DIR = path.join(os.homedir(), ".pi", "agent", "extensions", "subagent");
+-const REPO_URL = "https://github.com/nicobailon/pi-subagents.git";
++const REPO_URL = "https://github.com/vicary/pi-subagents.git";
+ 
+ const args = process.argv.slice(2);
+ const isRemove = args.includes("--remove") || args.includes("-r");
