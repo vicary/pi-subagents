@@ -1162,6 +1162,58 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[0]?.sessionFile, path.join(tempDir, "parent-fork-layout", "forks", id, "forked.jsonl"));
 	});
 
+	it("keeps direct background forks under configured or per-call run roots", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		mockPi.onCall({ output: "configured fork layout" });
+		const parentSessionFile = path.join(tempDir, "configured-parent-fork-layout.jsonl");
+		const defaultSessionDir = path.join(tempDir, "configured-fork-sessions");
+		const explicitSessionDir = path.join(tempDir, "explicit-fork-sessions");
+		const sessionHeader = JSON.stringify({ type: "session", cwd: fs.realpathSync(tempDir) });
+		fs.writeFileSync(parentSessionFile, `${sessionHeader}\n`, "utf-8");
+		const ctx = {
+			...makeMinimalCtx(tempDir),
+			sessionManager: {
+				getSessionId: () => "configured-session-fork-layout",
+				getSessionFile: () => parentSessionFile,
+				getLeafId: () => "leaf-current",
+				openSession: (_file: string, sessionDir: string) => ({
+					createBranchedSession: () => {
+						const forkedSessionFile = path.join(sessionDir, "forked.jsonl");
+						fs.mkdirSync(sessionDir, { recursive: true });
+						fs.writeFileSync(forkedSessionFile, `${sessionHeader}\n`, "utf-8");
+						return forkedSessionFile;
+					},
+				}),
+			},
+		};
+		const executor = makeAsyncExecutor([makeAgent("worker")], { defaultSessionDir });
+
+		const configured = await executor.execute(
+			"async-fork-configured-session-root",
+			{ agent: "worker", task: "Report", async: true, context: "fork", acceptance: false },
+			new AbortController().signal,
+			undefined,
+			ctx,
+		) as AsyncExecutionResult;
+		assert.equal(configured.isError, undefined, configured.content[0]?.text);
+		const configuredId = configured.details.asyncId!;
+		await readAsyncPayload(configuredId);
+		const configuredStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, configuredId, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(configuredStatus.steps?.[0]?.sessionFile, path.join(defaultSessionDir, configuredId, "run-0", "forked.jsonl"));
+
+		const explicit = await executor.execute(
+			"async-fork-explicit-session-root",
+			{ agent: "worker", task: "Report again", async: true, context: "fork", sessionDir: explicitSessionDir, acceptance: false },
+			new AbortController().signal,
+			undefined,
+			ctx,
+		) as AsyncExecutionResult;
+		assert.equal(explicit.isError, undefined, explicit.content[0]?.text);
+		const explicitId = explicit.details.asyncId!;
+		await readAsyncPayload(explicitId);
+		const explicitStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, explicitId, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(explicitStatus.steps?.[0]?.sessionFile, path.join(explicitSessionDir, explicitId, "run-0", "forked.jsonl"));
+	});
+
 	it("launches foreground and background children with the parent session's project trust", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
 		const executor = makeAsyncExecutor([makeAgent("worker")]);
 		const ctx = { ...makeMinimalCtx(tempDir), isProjectTrusted: () => false };
