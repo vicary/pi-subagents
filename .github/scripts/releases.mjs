@@ -28,7 +28,7 @@ for (const release of source) {
   const notice = historical
     ? '> **Upstream history: unpatched.** This historical tag is mirrored unchanged from upstream.'
     : '> **Fork release: patched.** Upstream binary assets are not redistributed. When published through the fork\'s trusted publishing workflow, npm builds include OIDC provenance.';
-  const data = { tag_name: release.tag_name, name: release.name, body: `${notice}\n\n${release.body ?? ''}`, draft: release.draft, prerelease: release.prerelease };
+  const data = { tag_name: release.tag_name, ...(release.name == null ? {} : { name: release.name }), body: `${notice}\n\n${release.body ?? ''}`, draft: release.draft, prerelease: release.prerelease };
   if (!existing || Object.keys(data).some(key => (existing[key] ?? null) !== (data[key] ?? null))) plans.push({ existing, data });
 }
 for (const { existing, data } of plans) {
