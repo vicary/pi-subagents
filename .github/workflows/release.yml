@@ -1,32 +1,30 @@
-name: Release
-
+name: Scoped release
 on:
+  workflow_call:
   workflow_dispatch:
-
 permissions:
   contents: read
-  id-token: write
-
 concurrency:
-  group: release-${{ github.ref }}
+  group: scoped-release
   cancel-in-progress: false
-
 jobs:
   publish:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # Waits for the maintainer's approval on GitHub before anything is published.
     environment: release
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: false
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - name: Install devDependencies
-        run: npm ci --ignore-scripts
-      - name: Run tests
-        run: npm run test:all
-      - name: Build published package
-        run: npm run build:pkg
-      - name: Publish to npm
-        run: npm publish ./dist-pkg --provenance
+      - name: Verify all fork release refs
+        run: bash .github/scripts/sync.sh verify
+      - name: Reconcile scoped npm releases
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: bash .github/scripts/publish.sh

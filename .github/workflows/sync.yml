@@ -1,0 +1,48 @@
+name: Fork sync
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    outputs:
+      pending: ${{ steps.pending.outputs.pending }}
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Require workflow-authorized sync credential
+        env:
+          FORK_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: test -n "$FORK_SYNC_TOKEN" || { echo 'FORK_SYNC_TOKEN is required' >&2; exit 1; }
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: false
+          token: ${{ secrets.FORK_SYNC_TOKEN }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: bash .github/scripts/sync.sh
+        env:
+          HAS_WORKFLOW_TOKEN: ${{ secrets.FORK_SYNC_TOKEN != '' }}
+      - name: Reconcile GitHub releases
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: node .github/scripts/releases.mjs
+      - name: Check for pending npm releases
+        id: pending
+        run: |
+          git fetch --no-tags origin '+refs/tags/*:refs/fork-tags/*'
+          bash .github/scripts/pending.sh
+  publish:
+    needs: sync
+    if: needs.sync.outputs.pending == 'true'
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+    permissions:
+      contents: read

@@ -1,0 +1,7 @@
+# Fork release synchronization
+
+Tags before v0.83.1 are unchanged upstream history, not patched fork releases. Stable tags from v0.83.1 onward are reconstructed with `fork.patch`; unsupported upstream tag formats or patch conflicts stop synchronization before any push. GitHub release descriptions retain upstream notes with a fork/history notice. Upstream release assets are not copied, and existing fork release assets require manual review.
+
+Configure `FORK_SYNC_TOKEN` with access to this repository and Contents: write and Workflows: write; branch/tag protection must permit its atomic pushes. Configure `NPM_TOKEN` in the `release` environment as an npm granular access token authorized to publish the scoped package, including any required bypass for interactive 2FA. Bootstrap the scoped package and configure npm access appropriately before automation. The release environment may require approval. Actions must be enabled and the workflow changes committed on main.
+
+Publishing uses token authentication and explicitly disables npm provenance; no OIDC permission is granted. Each package's `gitHead` records its verified patched tag commit, but is not a signed provenance attestation. Never override `GITHUB_SHA`. Existing published versions are checked by `gitHead`; dist-tags of existing versions are not reconciled. Release synchronization is retryable, but an upstream release with a missing tag or a fork release with assets blocks reconciliation. No upstream binary asset is represented as patched.
