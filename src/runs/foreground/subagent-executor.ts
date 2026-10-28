@@ -7710,6 +7710,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		// blocks are stripped from the inherited transcript by the resolver (they are bound
 		// to the parent session), which is not a reason to disable the child's own reasoning.
 		let sessionRunId: string | undefined;
+		let sessionDirForIndex: (index?: number) => string;
 		try {
 			assertLaunchableAgentsAllowedBeforeFork();
 			const pruneSession = contextPolicy.usesFork && deps.config.forkContext?.mode === "pruned"
@@ -7724,6 +7725,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						if (!sessionRunId) throw new Error("A fork session was requested before the launch's run id was assigned.");
 						return sessionRunId;
 					},
+					...(effectiveParams.sessionDir || deps.config.defaultSessionDir
+						? { sessionDirForIndex: (index?: number) => sessionDirForIndex(index) }
+						: {}),
 				},
 			);
 			prepareForkSessionForIndex = forkContextResolver.prepareSessionForIndex;
@@ -7850,7 +7854,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				contextPolicy.contextSummary,
 			);
 		}
-		const sessionDirForIndex = (idx?: number) =>
+		sessionDirForIndex = (idx?: number) =>
 			path.join(sessionRoot, `run-${idx ?? 0}`);
 		const forkSessionFileForTask: ForkSessionFileForTask = (agentName, idx = 0) => {
 			if (!shouldForkAgent(contextPolicy, agentName)) return undefined;
