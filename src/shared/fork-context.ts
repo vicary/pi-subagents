@@ -51,6 +51,8 @@ interface ForkContextResolverOptions {
 	pruneSession?: (sessionFile: string) => Promise<void>;
 	/** Run id that names this launch's fork directory, read when the first fork is created. */
 	runDirName: () => string;
+	/** Optional per-child branch directory; preserves the parent-derived layout when omitted. */
+	sessionDirForIndex?: (index?: number) => string;
 }
 
 interface ForkContextResolver {
@@ -173,19 +175,13 @@ export function createForkContextResolver(
 	const openSession = options.openSession
 		?? sessionManager.openSession
 		?? ((file: string, dir?: string) => SessionManager.open(file, dir));
-	// Fork files must not land in the parent's top-level session directory.
+	// The default keeps fork files out of the parent's top-level session directory.
 	// Pi's recent-session discovery (`pi -c` → findMostRecentSession) is
 	// non-recursive and picks the largest-mtime *.jsonl in that directory, so
-	// a still-running forked subagent — which keeps appending after the parent
-	// went idle — would hijack the next `pi -c` away from the conversation the
-	// user actually left. Nesting fork sessions in a per-parent directory keeps
-	// them invisible to that discovery; the `parentSession` header still
-	// records the tree relationship. The directory mirrors
-	// getSubagentSessionRoot() plus a "forks" level so fork files never sit
-	// loose next to run-N/ result directories. Derived from the file path
-	// rather than getSessionDir() so it also works when the manager cannot
-	// report its directory.
-	const forksDir = path.join(
+	// a still-running forked subagent must not become that session. Callers that
+	// already selected an isolated per-child root use it instead; the official
+	// parentSession header still records the branch relationship.
+	const defaultForksDir = path.join(
 		path.dirname(parentSessionFile),
 		path.basename(parentSessionFile, ".jsonl"),
 		"forks",
@@ -202,7 +198,7 @@ export function createForkContextResolver(
 				throw new Error(`Parent session file does not exist: ${parentSessionFile}. Pi has not persisted enough history to fork yet.`);
 			}
 			// Nested resume accepts a session file only under a directory named by the run's id.
-			const sessionDir = path.join(forksDir, options.runDirName());
+			const sessionDir = options.sessionDirForIndex?.(index) ?? path.join(defaultForksDir, options.runDirName());
 			const sourceManager = openSession(parentSessionFile, sessionDir);
 			const sessionFile = sourceManager.createBranchedSession(leafId);
 			if (!sessionFile) {
