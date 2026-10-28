@@ -27,7 +27,7 @@ for (const release of source) {
   if (existing?.assets.length) throw Error(`Fork release ${release.tag_name} has assets; refusing to alter it automatically`);
   const notice = historical
     ? '> **Upstream history: unpatched.** This historical tag is mirrored unchanged from upstream.'
-    : '> **Fork release: patched.** Upstream binary assets are not redistributed; npm builds have no provenance attestation.';
+    : '> **Fork release: patched.** Upstream binary assets are not redistributed. When published through the fork\'s trusted publishing workflow, npm builds include OIDC provenance.';
   const data = { tag_name: release.tag_name, name: release.name, body: `${notice}\n\n${release.body ?? ''}`, draft: release.draft, prerelease: release.prerelease };
   if (!existing || Object.keys(data).some(key => (existing[key] ?? null) !== (data[key] ?? null))) plans.push({ existing, data });
 }

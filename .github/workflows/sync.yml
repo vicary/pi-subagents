@@ -4,16 +4,17 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
 permissions:
-  contents: write
-concurrency:
-  group: fork-sync
-  cancel-in-progress: false
+  contents: read
+  id-token: write
 jobs:
   sync:
-    outputs:
-      pending: ${{ steps.pending.outputs.pending }}
-    runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: fork-sync
+      cancel-in-progress: false
     steps:
       - name: Require workflow-authorized sync credential
         env:
@@ -34,15 +35,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: node .github/scripts/releases.mjs
-      - name: Check for pending npm releases
-        id: pending
+      - name: Dispatch next pending npm release at its tag
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           git fetch --no-tags origin '+refs/tags/*:refs/fork-tags/*'
           bash .github/scripts/pending.sh
   publish:
-    needs: sync
-    if: needs.sync.outputs.pending == 'true'
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/release.yml
-    secrets: inherit
     permissions:
       contents: read
+      id-token: write
