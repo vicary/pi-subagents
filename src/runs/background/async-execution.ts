@@ -206,7 +206,7 @@ function parentExtensionProviderForChild(ctx: AsyncExecutionContext, disableAmbi
 	return provider && ctx.parentProviderRegistry.getRegisteredProviderIds().includes(provider) ? provider : undefined;
 }
 
-export const DEFAULT_ASYNC_TIMEOUT_MS = 30 * 60 * 1000;
+
 
 interface AsyncChainParams {
 	chain: ChainStep[];
@@ -1344,7 +1344,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 			outputMode: behavior.outputMode,
 			sessionFile,
 			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
-			timeoutMs: a.defaultTimeoutMs ?? DEFAULT_ASYNC_TIMEOUT_MS,
+			timeoutMs: a.defaultTimeoutMs,
 			toolTimeoutMs: resolvedToolTimeout.toolTimeoutMs,
 			waitToolEnabled: params.waitToolEnabled,
 			waitToolDefaultTimeoutMs: params.waitToolDefaultTimeoutMs,

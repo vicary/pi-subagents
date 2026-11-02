@@ -20,11 +20,17 @@ else
   : > "$ledger"
 fi
 # The ledger is trusted only because it is committed on fork main, never from a tag.
-awk 'NF != 2 || $1 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/ || $2 !~ /^[0-9a-f]+$/ || length($2) != 40 || seen[$1]++ { exit 1 }' "$ledger" || { echo 'Invalid release ledger' >&2; exit 1; }
+awk 'NF != 2 || $1 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+(-[1-9][0-9]*)?$/ || $2 !~ /^[0-9a-f]+$/ || length($2) != 40 || seen[$1]++ { exit 1 }' "$ledger" || { echo 'Invalid release ledger' >&2; exit 1; }
 ledger_changed=false
 while read -r recorded_tag recorded_commit; do
-  git show-ref --verify --quiet "refs/upstream-tags/$recorded_tag" || { echo "Recorded upstream tag $recorded_tag is missing" >&2; exit 1; }
+  base_tag=${recorded_tag%-*}
+  git show-ref --verify --quiet "refs/upstream-tags/$base_tag" || { echo "Recorded upstream tag $base_tag is missing" >&2; exit 1; }
   git show-ref --verify --quiet "refs/fork-tags/$recorded_tag" || { echo "Recorded fork tag $recorded_tag is missing; refusing to recreate it" >&2; exit 1; }
+  [ "$(git rev-parse "refs/fork-tags/$recorded_tag^{commit}")" = "$recorded_commit" ] || { echo "Recorded fork tag $recorded_tag moved" >&2; exit 1; }
+  if [ "$base_tag" != "$recorded_tag" ]; then
+    base_commit=$(awk -v tag="$base_tag" '$1 == tag { print $2 }' "$ledger")
+    [ -n "$base_commit" ] && [ "$(git rev-parse "$recorded_commit^1")" = "$base_commit" ] || { echo "Revision tag $recorded_tag has an untrusted base" >&2; exit 1; }
+  fi
 done < "$ledger"
 [ "$(git rev-parse 'refs/upstream-tags/v0.83.1^{commit}')" = "$(git rev-parse "$baseline^{commit}")" ] || { echo 'Upstream baseline tag changed' >&2; exit 1; }
 

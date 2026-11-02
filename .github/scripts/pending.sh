@@ -7,12 +7,12 @@ trap 'rm -f "$registry" "$ledger"' EXIT
 # Neither the checked-out tree nor tag contents are the authority for releases.
 git fetch --prune --no-tags origin '+refs/heads/main:refs/remotes/origin/main' '+refs/tags/*:refs/fork-tags/*'
 git show 'refs/remotes/origin/main:.github/release-ledger' > "$ledger" || { echo 'Missing trusted release ledger on origin/main' >&2; exit 1; }
-awk 'NF != 2 || $1 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/ || $2 !~ /^[0-9a-f]+$/ || length($2) != 40 || seen[$1]++ { exit 1 }' "$ledger" || { echo 'Invalid release ledger' >&2; exit 1; }
+awk 'NF != 2 || $1 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+(-[1-9][0-9]*)?$/ || $2 !~ /^[0-9a-f]+$/ || length($2) != 40 || seen[$1]++ { exit 1 }' "$ledger" || { echo 'Invalid release ledger' >&2; exit 1; }
 status=$(curl --silent --show-error --location --output "$registry" --write-out '%{http_code}' 'https://registry.npmjs.org/%40vicary%2Fpi-subagents')
 case "$status" in 200) ;; 404) printf '{"versions":{}}' > "$registry" ;; *) echo "npm registry returned HTTP $status" >&2; exit 1 ;; esac
 node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1])); if (!p.versions || typeof p.versions !== "object") throw Error("Invalid registry metadata")' "$registry"
 while IFS= read -r tag; do
-  [[ $tag =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected fork tag $tag" >&2; exit 1; }
+  [[ $tag =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[1-9][0-9]*)?$ ]] || { echo "Unexpected fork tag $tag" >&2; exit 1; }
   version=${tag#v}
   if [ "$(printf '%s\n' "$version" 0.83.1 | sort -V | head -1)" != 0.83.1 ]; then continue; fi
   commit=$(git rev-parse "refs/fork-tags/$tag^{commit}")
