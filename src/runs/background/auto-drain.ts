@@ -4,7 +4,7 @@ import { listAsyncRuns } from "./async-status.ts";
 import type { ReadonlyDrainObservation } from "../shared/readonly-drain-observation.ts";
 import { backgroundWorkForSession, waitForSubagents, waitRunScopes, type SubagentWaitDeps, type SubagentWaitParams, type WaitEventBus } from "./subagent-wait.ts";
 
-export const DEFAULT_AUTO_DRAIN_TIMEOUT_MS = 30 * 60 * 1000;
+const AUTO_DRAIN_WAIT_WINDOW_MS = 30 * 60 * 1000;
 
 export interface AutoDrainDeps extends Pick<SubagentWaitDeps, "asyncDirRoot" | "resultsDir" | "nestedRootRunId"> {
 	state: SubagentState;
@@ -45,9 +45,9 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
 	try {
 		if (!sessionId) throw new Error("Cannot auto-drain background work without an active session identity.");
 		const now = deps.now ?? Date.now;
-		const timeoutMs = deps.timeoutMs ?? DEFAULT_AUTO_DRAIN_TIMEOUT_MS;
-		if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Auto-drain timeoutMs must be a positive finite number.");
-		const deadlineAt = now() + timeoutMs;
+		const timeoutMs = deps.timeoutMs;
+		if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new Error("Auto-drain timeoutMs must be a positive finite number.");
+		const deadlineAt = timeoutMs === undefined ? undefined : now() + timeoutMs;
 		const hasWork = deps.hasWork ?? ((id: string, time: number) => hasOutstandingWork(deps, id, time, observation));
 		const wait = deps.wait ?? waitForSubagents;
 
@@ -57,7 +57,7 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
 			const work = hasWork(sessionId, now());
 			observation?.predicate(work);
 			if (!work) break;
-			const remainingMs = deadlineAt - now();
+			const remainingMs = deadlineAt === undefined ? AUTO_DRAIN_WAIT_WINDOW_MS : deadlineAt - now();
 			if (remainingMs <= 0) {
 				throw new Error(`Auto-drain timed out after ${timeoutMs}ms with background work still active in session '${sessionId}'.`);
 			}

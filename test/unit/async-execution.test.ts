@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { buildAsyncRunnerSteps, assertClaudeCodeOverrideIsLocal, DEFAULT_ASYNC_TIMEOUT_MS, emitProcessTerminalEvent, formatAsyncStartedMessage, resolveAsyncRunnerLogPaths } from "../../src/runs/background/async-execution.ts";
+import { buildAsyncRunnerSteps, assertClaudeCodeOverrideIsLocal, emitProcessTerminalEvent, formatAsyncStartedMessage, resolveAsyncRunnerLogPaths } from "../../src/runs/background/async-execution.ts";
 import type { AgentConfig } from "../../src/agents/agents.ts";
 import { SUBAGENT_PROCESS_TERMINAL_EVENT } from "../../src/shared/types.ts";
 import { registerRequiredChildExtensions } from "../../src/api/required-child-extensions.ts";
@@ -242,10 +242,10 @@ describe("async runner execution", () => {
 		});
 
 		assert.ok("steps" in result, "expected successful step build");
-		assert.equal(result.steps[0]?.timeoutMs, DEFAULT_ASYNC_TIMEOUT_MS);
+		assert.equal(result.steps[0]?.timeoutMs, undefined);
 		const parallel = result.steps[1];
 		assert.ok(parallel && "parallel" in parallel && Array.isArray(parallel.parallel));
-		assert.deepEqual(parallel.parallel.map((step) => step.timeoutMs), [DEFAULT_ASYNC_TIMEOUT_MS, 7_000]);
+		assert.deepEqual(parallel.parallel.map((step) => step.timeoutMs), [undefined, 7_000]);
 	});
 
 	it("uses agent tool budget before config default when no run override exists", () => {

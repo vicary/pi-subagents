@@ -4255,7 +4255,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("applies the foreground timeout default without overriding explicit or agent values", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("leaves foreground runs unbounded without overriding explicit or agent values", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "package default" });
 		mockPi.onCall({ output: "explicit timeout" });
 		mockPi.onCall({ output: "max runtime alias" });
@@ -4269,8 +4269,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 			undefined,
 			makeMinimalCtx(tempDir),
 		);
-		assert.equal(defaultResult.details?.timeoutMs, executorMod?.DEFAULT_FOREGROUND_TIMEOUT_MS);
-		assert.equal(defaultResult.details?.timeoutMs, 30 * 60 * 1000);
+		assert.equal(defaultResult.details?.timeoutMs, undefined);
 
 		const explicitResult = await defaultExecutor.execute(
 			"foreground-timeout-explicit",
@@ -4309,7 +4308,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		mockPi.onCall({ output: "agent over config" });
 		mockPi.onCall({ output: "invalid config ignored" });
 
-		// A global config.timeoutMs replaces the built-in 30-minute foreground backstop.
+		// A global config.timeoutMs establishes a foreground deadline.
 		const configExecutor = makeExecutor([makeAgent("echo")], { timeoutMs: NINETY_MIN });
 		const configResult = await configExecutor.execute(
 			"config-timeout-default",
@@ -4340,7 +4339,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		);
 		assert.equal(agentResult.details?.timeoutMs, 4_000);
 
-		// An invalid config value is ignored -> falls back to the built-in 30-minute default.
+		// An invalid config value is ignored, leaving no deadline.
 		const invalidResult = await makeExecutor([makeAgent("echo")], { timeoutMs: -1 }).execute(
 			"config-timeout-invalid",
 			{ agent: "echo", task: "Task", async: false },
@@ -4348,7 +4347,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 			undefined,
 			makeMinimalCtx(tempDir),
 		);
-		assert.equal(invalidResult.details?.timeoutMs, executorMod?.DEFAULT_FOREGROUND_TIMEOUT_MS);
+		assert.equal(invalidResult.details?.timeoutMs, undefined);
 	});
 
 	it("applies the global config timeout default to foreground workflow scripts", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
