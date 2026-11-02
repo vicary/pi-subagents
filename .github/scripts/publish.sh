@@ -3,8 +3,9 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 export LC_ALL=C
 package='@vicary/pi-subagents'
-[[ ${GITHUB_REF:-} =~ ^refs/tags/(v?[0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo 'A stable tag dispatch is required' >&2; exit 1; }
+[[ ${GITHUB_REF:-} =~ ^refs/tags/(v?[0-9]+\.[0-9]+\.[0-9]+(-[1-9][0-9]*)?)$ ]] || { echo 'A stable or fork revision tag dispatch is required' >&2; exit 1; }
 tag=${BASH_REMATCH[1]}
+base_tag=${tag%-*}
 version=${tag#v}
 [ "$(printf '%s\n' "$version" 0.83.1 | sort -V | head -1)" = 0.83.1 ] || { echo 'Historical tags are not fork releases' >&2; exit 1; }
 commit=$(git rev-parse HEAD)
@@ -14,12 +15,20 @@ trap 'rm -f "$ledger" "${registry:-}"' EXIT
 # Fetch the authority from main independently; never trust a ledger in the tag.
 git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main' "+refs/tags/$tag:refs/fork-tags/$tag"
 git show 'refs/remotes/origin/main:.github/release-ledger' > "$ledger" || { echo 'Missing trusted release ledger on origin/main' >&2; exit 1; }
-awk 'NF != 2 || $1 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/ || $2 !~ /^[0-9a-f]+$/ || length($2) != 40 || seen[$1]++ { exit 1 }' "$ledger" || { echo 'Invalid release ledger' >&2; exit 1; }
+awk 'NF != 2 || $1 !~ /^v?[0-9]+\.[0-9]+\.[0-9]+(-[1-9][0-9]*)?$/ || $2 !~ /^[0-9a-f]+$/ || length($2) != 40 || seen[$1]++ { exit 1 }' "$ledger" || { echo 'Invalid release ledger' >&2; exit 1; }
 recorded=$(awk -v tag="$tag" '$1 == tag { print $2 }' "$ledger")
 [ -n "$recorded" ] && [ "$recorded" = "$commit" ] || { echo "Tag $tag is absent from or differs from the trusted release ledger" >&2; exit 1; }
-git fetch --no-tags https://github.com/nicobailon/pi-subagents.git "+refs/tags/$tag:refs/upstream-tags/$tag"
+git fetch --no-tags https://github.com/nicobailon/pi-subagents.git "+refs/tags/$base_tag:refs/upstream-tags/$base_tag"
 [ "$(git rev-parse "refs/fork-tags/$tag^{commit}")" = "$commit" ] || { echo 'Tag moved since dispatch' >&2; exit 1; }
-[ "$(git rev-parse "$commit^1")" = "$(git rev-parse "refs/upstream-tags/$tag^{commit}")" ] || { echo 'Tag is not based on the upstream release' >&2; exit 1; }
+if [ "$base_tag" = "$tag" ]; then
+  expected_parent=$(git rev-parse "refs/upstream-tags/$base_tag^{commit}")
+else
+  git fetch --no-tags origin "+refs/tags/$base_tag:refs/fork-tags/$base_tag"
+  expected_parent=$(awk -v tag="$base_tag" '$1 == tag { print $2 }' "$ledger")
+  [ -n "$expected_parent" ] && [ "$expected_parent" = "$(git rev-parse "refs/fork-tags/$base_tag^{commit}")" ] || { echo 'Revision base does not match trusted ledger' >&2; exit 1; }
+  [ "$(git rev-parse "$expected_parent^1")" = "$(git rev-parse "refs/upstream-tags/$base_tag^{commit}")" ] || { echo 'Revision base is not based on upstream release' >&2; exit 1; }
+fi
+[ "$(git rev-parse "$commit^1")" = "$expected_parent" ] || { echo 'Tag has an unexpected parent' >&2; exit 1; }
 [ "$(git show "$commit:package.json" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')" = "$version" ] || { echo 'Tag and package version differ' >&2; exit 1; }
 registry=$(mktemp)
 status=$(curl --silent --show-error --location --output "$registry" --write-out '%{http_code}' 'https://registry.npmjs.org/%40vicary%2Fpi-subagents')
@@ -33,7 +42,9 @@ if [ -n "$existing" ]; then
 fi
 latest=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1])); console.log(p["dist-tags"].latest || "")' "$registry")
 disttag=latest
-if [ -n "$latest" ]; then
+if [ "$base_tag" != "$tag" ]; then
+  disttag="fork-$version"
+elif [ -n "$latest" ]; then
   [[ $latest =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || { echo "Cannot safely compare latest version $latest" >&2; exit 1; }
   latestbase=${BASH_REMATCH[1]}
   # A stable version outranks a prerelease of the same base. Never move latest backwards.
