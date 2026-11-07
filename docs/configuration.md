@@ -442,13 +442,13 @@ Forces depth-0 internal single, parallel, and chain runs into background mode an
 { "timeoutMs": 3600000 }
 ```
 
-Global default runtime deadline, in milliseconds, for subagent runs. It replaces the built-in 30-minute backstop for foreground launches (single, parallel, chain, and workflow scripts) and plain single-agent async runs whenever no call-level `timeoutMs`/`maxRuntimeMs` applies. For single-agent launches, selected agent frontmatter `timeoutMs` still wins. This only moves the *default*. Expiring this run-level deadline is terminal.
+Global default runtime deadline, in milliseconds, for foreground launches (single, parallel, chain, and workflow scripts) and plain single-agent async runs whenever no call-level `timeoutMs`/`maxRuntimeMs` applies. Without a configured or explicit deadline, these runs have no runtime deadline. For single-agent launches, selected agent frontmatter `timeoutMs` still wins. This only moves the *default*. Expiring this run-level deadline is terminal.
 
-This deadline bounds the whole run. The wait for a single model response is bounded separately by Pi's `httpIdleTimeoutMs` setting (default 300000; `0` disables it), which Pi applies both as the SDK request timeout and as the undici header/body idle timeout. Detached async runners read the same setting from `~/.pi/agent/settings.json` and the project `.pi/settings.json` for their own HTTP dispatcher, so a local model that queues or prefills for longer than five minutes needs `httpIdleTimeoutMs` raised or disabled in Pi settings, plus a `timeoutMs` long enough for the run.
+This deadline bounds the whole run. The wait for a single model response is bounded separately by Pi's `httpIdleTimeoutMs` setting (default 300000; `0` disables it), which Pi applies both as the SDK request timeout and as the undici header/body idle timeout. Detached async runners read the same setting from `~/.pi/agent/settings.json` and the project `.pi/settings.json` for their own HTTP dispatcher, so a local model that queues or prefills for longer than five minutes needs `httpIdleTimeoutMs` raised or disabled in Pi settings, and any configured run deadline must also allow enough time.
 
-Use it when foreground orchestration or plain async single-agent runs need a longer default than 30 minutes. It does not set async composite top-level deadlines, and it does not replace async fan-out child deadlines.
+Use it when foreground orchestration or plain async single-agent runs need a default deadline. It does not set async composite top-level deadlines, and it does not replace async fan-out child deadlines.
 
-Composite async runs (async chains, parallel tasks, and scripted workflows) stay unbounded at the top level by design. Their runner children are bounded individually by their own agent or runner defaults, so this value does not cap them. Must be a positive integer no greater than `2147483647` (the largest delay a Node.js timer can honor, roughly 24.8 days); invalid or out-of-range values are ignored and the built-in defaults apply.
+Composite async runs (async chains, parallel tasks, and scripted workflows) stay unbounded at the top level by design. Their runner children use explicit agent or runner deadlines when configured, so this value does not cap them. Must be a positive integer no greater than `2147483647` (the largest delay a Node.js timer can honor, roughly 24.8 days); invalid or out-of-range values are ignored.
 
 ## `toolTimeoutMs`
 
@@ -458,7 +458,7 @@ Composite async runs (async chains, parallel tasks, and scripted workflows) stay
 
 Optional hard per-tool-call deadline in milliseconds. When configured, a child that emits `tool_execution_start` but not `tool_execution_end` is terminated with `timedOut: true` and a tool-specific error. The effective value is resolved per child: explicit `subagent` call value, then agent frontmatter, then this config value, then `PI_SUBAGENT_TOOL_TIMEOUT_MS`.
 
-Without a configured value, Pi still applies a five-minute hard timeout to known-fast built-in tools: `read`, `grep`, `find`, `ls`, `edit`, `write`, and `structured_output`. Long-running tools such as `bash`, custom tools, and MCP tools do not get a hard default. They get the normal open-tool attention notice after `activeNoticeAfterMs` and remain bounded by the run-level deadline.
+Without a configured value, Pi still applies a five-minute hard timeout to known-fast built-in tools: `read`, `grep`, `find`, `ls`, `edit`, `write`, and `structured_output`. Long-running tools such as `bash`, custom tools, and MCP tools do not get a hard default. They get the normal open-tool attention notice after `activeNoticeAfterMs` and remain bounded by any configured run-level deadline.
 
 The tool timer tracks each active `toolCallId` separately and never extends the run-level deadline: when the remaining run budget is shorter, the ordinary run-level timeout wins. `contact_supervisor`, `intercom`, and `bg_wait` are exempt because their legitimate purpose can be to wait for a human, supervisor, or background run. Use hard tool timeouts only for wedge protection; an elapsed timeout is not a mutation-safe boundary. Configured values must be positive integers no greater than `2147483647`; invalid or out-of-range values are rejected with a visible error rather than silently ignored.
 
