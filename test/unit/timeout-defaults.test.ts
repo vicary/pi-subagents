@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-	resolveConfigDefaultTimeoutMs,
-	resolveSingleAgentLaunchTimeout,
-} from "../../src/runs/foreground/subagent-executor.ts";
+import { resolveSingleAgentLaunchTimeout } from "../../src/runs/foreground/subagent-executor.ts";
+import { resolveConfigDefaultTimeoutMs } from "../../src/extension/config.ts";
 
 describe("single-agent launch timeout wiring", () => {
 	it("leaves async and foreground runs unbounded when no deadline is configured", () => {
