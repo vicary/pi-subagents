@@ -148,7 +148,9 @@ fi
 # Always require the workflow-authorized credential before any push, including tags.
 [ "${HAS_WORKFLOW_TOKEN:-false}" = true ] || { echo 'FORK_SYNC_TOKEN with Contents:write and Workflows:write required; no refs pushed.' >&2; exit 1; }
 args=(--atomic "--force-with-lease=refs/heads/main:$old")
-for spec in "${refs[@]}"; do args+=("--force-with-lease=${spec#*:}:"); done
+if [ ${#refs[@]} -gt 0 ]; then
+  for spec in "${refs[@]}"; do args+=("--force-with-lease=${spec#*:}:"); done
+fi
 if [ "$new" != "$old" ]; then refs+=("$new:refs/heads/main"); fi
 if ! git push "${args[@]}" origin "${refs[@]}"; then
   echo 'Atomic push failed; no refs should have changed. Check branch protection, stale lease, and workflow-file token permissions; rerun after correction.' >&2
