@@ -12,7 +12,7 @@ index 2a37877a8468fba85046461d308ecbf539864a90..f1b6d0f70eef8a8d5e48cbc9a5c47976
  | `acceptance` | Acceptance default for single-agent launches. Use a scalar level such as `checked` or an inline/block YAML map such as `{ level: "none", reason: "lightweight lookup" }`. Explicit call values win; chain and parallel acceptance remains task/step configuration. |
  | `acceptanceRole` | Optional `read-only` or `writer` role for automatic acceptance inference. When omitted, automatic acceptance uses lightweight attestation; task wording and agent names do not escalate it. This does not grant or revoke tools. |
 diff --git a/docs/configuration.md b/docs/configuration.md
-index e38744ceb5164a8816d74a891d2cb1e9d01a31d0..2b9550e647ec9e693f1712c988bfbb135c3060b3 100644
+index 3c6039124be17d20f335c698a20f8b9970395175..f8ac0d0a505ff82b8536f90dedf4acf7a0da4278 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -412,7 +412,7 @@ Adds a short `active_subagents` section to the parent's system prompt while this
@@ -328,10 +328,10 @@ index 59714f77d60487cd4f8994ba93284e957bfc969c..3bd1f0372383362d5e43a2ed9fb0372e
  			const sessionFile = sourceManager.createBranchedSession(leafId);
  			if (!sessionFile) {
 diff --git a/src/shared/types.ts b/src/shared/types.ts
-index 8344573147167061ace11ad83685fec7ad90526f..e70b004d444bba44b8e49dddd1e0c14186124be4 100644
+index cd279b0a635713b2fe89119997ebca8204776881..9ef142e6d36202962e5bbf6e2754e77a4afa0815 100644
 --- a/src/shared/types.ts
 +++ b/src/shared/types.ts
-@@ -2793,12 +2793,11 @@ export interface ExtensionConfig {
+@@ -2797,12 +2797,11 @@ export interface ExtensionConfig {
  	/** Global cap on simultaneously-running subagent tasks within a single run. Defaults to 20. */
  	globalConcurrencyLimit?: number;
  	/**
@@ -350,7 +350,7 @@ index 8344573147167061ace11ad83685fec7ad90526f..e70b004d444bba44b8e49dddd1e0c141
  	 */
  	timeoutMs?: number;
 diff --git a/test/integration/async-execution.part-1.test.ts b/test/integration/async-execution.part-1.test.ts
-index a5a4d574bdfed98d884a1976d19f643424afeff3..c114cb07222ae5a3b1141a943afb6af938972168 100644
+index 25b8e61050d9042be2e22407240646077d1c0043..ddbd3623610246725055385741faba895b393f0f 100644
 --- a/test/integration/async-execution.part-1.test.ts
 +++ b/test/integration/async-execution.part-1.test.ts
 @@ -1154,6 +1154,58 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
@@ -427,7 +427,7 @@ index abd2372b2994e1d4f5ab87bb714fd4efa169ecda..e9afc0264aef86b8dbe04a44b1c41b8d
  			assert.equal(fs.existsSync(path.join(tempDir, "feature.txt")), false);
  			assert.equal(status.parallelHandoff?.changedPatches, 1);
 diff --git a/test/integration/single-execution.part-2.test.ts b/test/integration/single-execution.part-2.test.ts
-index 1156c5d9fc88a56bc3370500b765d10db8565211..07302e9771455b3a94287a3fb0eca409b93eefc5 100644
+index 1fc40f0d507e9742e9133afb34e78a35ae339ee7..7be07d550d9b7e3fab9b311301cf568c0ab1dc35 100644
 --- a/test/integration/single-execution.part-2.test.ts
 +++ b/test/integration/single-execution.part-2.test.ts
 @@ -9,6 +9,7 @@ import {
@@ -520,7 +520,7 @@ index 1156c5d9fc88a56bc3370500b765d10db8565211..07302e9771455b3a94287a3fb0eca409
  	it("completes no-edit foreground runs independently of task prose and tool capability", async () => {
  		const cleanRepo = path.join(tempDir, "no-edit-clean-repo");
  		fs.mkdirSync(cleanRepo);
-@@ -4168,7 +4244,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4195,7 +4271,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  		assert.equal(mockPi.callCount(), 0);
  	});
  
@@ -529,7 +529,7 @@ index 1156c5d9fc88a56bc3370500b765d10db8565211..07302e9771455b3a94287a3fb0eca409
  		mockPi.onCall({ output: "package default" });
  		mockPi.onCall({ output: "explicit timeout" });
  		mockPi.onCall({ output: "max runtime alias" });
-@@ -4182,8 +4258,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4209,8 +4285,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  			undefined,
  			makeMinimalCtx(tempDir),
  		);
@@ -539,7 +539,7 @@ index 1156c5d9fc88a56bc3370500b765d10db8565211..07302e9771455b3a94287a3fb0eca409
  
  		const explicitResult = await defaultExecutor.execute(
  			"foreground-timeout-explicit",
-@@ -4222,7 +4297,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4249,7 +4324,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  		mockPi.onCall({ output: "agent over config" });
  		mockPi.onCall({ output: "invalid config ignored" });
  
@@ -548,7 +548,7 @@ index 1156c5d9fc88a56bc3370500b765d10db8565211..07302e9771455b3a94287a3fb0eca409
  		const configExecutor = makeExecutor([makeAgent("echo")], { timeoutMs: NINETY_MIN });
  		const configResult = await configExecutor.execute(
  			"config-timeout-default",
-@@ -4253,7 +4328,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4280,7 +4355,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  		);
  		assert.equal(agentResult.details?.timeoutMs, 4_000);
  
@@ -557,7 +557,7 @@ index 1156c5d9fc88a56bc3370500b765d10db8565211..07302e9771455b3a94287a3fb0eca409
  		const invalidResult = await makeExecutor([makeAgent("echo")], { timeoutMs: -1 }).execute(
  			"config-timeout-invalid",
  			{ agent: "echo", task: "Task", async: false },
-@@ -4261,7 +4336,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4288,7 +4363,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  			undefined,
  			makeMinimalCtx(tempDir),
  		);
