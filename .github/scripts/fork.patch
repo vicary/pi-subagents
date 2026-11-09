@@ -1,8 +1,8 @@
 diff --git a/docs/agents.md b/docs/agents.md
-index 2d832f36..77642d59 100644
+index 2a37877a8468fba85046461d308ecbf539864a90..f1b6d0f70eef8a8d5e48cbc9a5c4797618f32398 100644
 --- a/docs/agents.md
 +++ b/docs/agents.md
-@@ -467,7 +467,7 @@ Field notes:
+@@ -488,7 +488,7 @@ Field notes:
  | `defaultProgress` | Maintain `progress.md`. |
  | `async` | Default a single-agent launch to background (`true`) or foreground (`false`) when the call omits `async`. Explicit call values and `forceTopLevelAsync` win. |
  | `launcher` | Name of a [`runnerLaunchers`](configuration.md#runnerlaunchers) entry that wraps this agent's background runner, such as a sandbox command. Names only; the command itself is defined in user config. See [Sandboxing background children with a launcher](#sandboxing-background-children-with-a-launcher). |
@@ -12,19 +12,19 @@ index 2d832f36..77642d59 100644
  | `acceptance` | Acceptance default for single-agent launches. Use a scalar level such as `checked` or an inline/block YAML map such as `{ level: "none", reason: "lightweight lookup" }`. Explicit call values win; chain and parallel acceptance remains task/step configuration. |
  | `acceptanceRole` | Optional `read-only` or `writer` role for automatic acceptance inference. When omitted, automatic acceptance uses lightweight attestation; task wording and agent names do not escalate it. This does not grant or revoke tools. |
 diff --git a/docs/configuration.md b/docs/configuration.md
-index a3f0f78..2983f0c 100644
+index e38744ceb5164a8816d74a891d2cb1e9d01a31d0..2b9550e647ec9e693f1712c988bfbb135c3060b3 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
-@@ -404,7 +404,7 @@ Adds a short `active_subagents` section to the parent's system prompt while this
+@@ -412,7 +412,7 @@ Adds a short `active_subagents` section to the parent's system prompt while this
  { "waitTool": { "enabled": true, "defaultTimeoutMs": 120000 } }
  ```
  
--`defaultTimeoutMs` sets the blocking window used when a `bg_wait` call omits `timeoutMs`; explicit call values win, followed by this setting, then the 30-minute fallback. pi-subagents registers one wait tool, named `bg_wait` unless `name` sets another (a letter, then letters, digits or underscores, at most 64 characters). Rename it when another extension also registers `bg_wait`, because Pi refuses to start when two extensions register the same tool name; for example `{ "waitTool": { "name": "subagent_wait" } }`. Everything pi-subagents says about waiting then uses that name, children get the same name, and a child agent that should wait lists that name in its `tools`. When the window elapses, the tool returns a non-error `window_elapsed` result with the still-active work identities, and that work keeps running. Set `enabled` to `false` to make direct calls return immediately instead of blocking. The default is enabled. You can also set `"waitTool": false`; set `PI_SUBAGENT_WAIT_TOOL_ENABLED=false` (or `0`, `off`, `disabled`) to override config for one process. The effective enabled, default-timeout and name values are passed explicitly to child runtimes. Headless `agent_end` auto-drain retains its own strict deadline and fails if required work remains unresolved. Invalid config or environment values fail instead of being coerced.
+-`defaultTimeoutMs` sets the blocking window used when a `bg_wait` call omits `timeoutMs`; explicit call values win, followed by this setting, then the 30-minute fallback. pi-subagents registers one wait tool, named `bg_wait` unless `name` sets another (a letter, then letters, digits or underscores, at most 64 characters). Rename it when another extension also registers `bg_wait`, because Pi refuses to start when two extensions register the same tool name; for example `{ "waitTool": { "name": "subagent_wait" } }`. Everything pi-subagents says about waiting then uses that name, children get the same name, and a child agent that should wait lists that name in its `tools`. When the window elapses, the tool returns a non-error `window_elapsed` result with the still-active work identities, and that work keeps running. Set `enabled` to `false` to make direct calls return immediately instead of blocking. The default is enabled. You can also set `"waitTool": false`; set `PI_SUBAGENT_WAIT_TOOL_ENABLED=false` (or `0`, `off`, `disabled`) to override config for one process. The effective enabled, default-timeout and name values are passed explicitly to child runtimes. Headless `agent_end` auto-drain does not use this window: it waits up to the [`timeoutMs`](#timeoutms) run deadline (default 30 minutes) and fails if required work remains unresolved. Invalid config or environment values fail instead of being coerced.
 +`defaultTimeoutMs` sets the blocking window used when a `bg_wait` call omits `timeoutMs`; explicit call values win, followed by this setting, then the 30-minute fallback. pi-subagents registers one wait tool, named `bg_wait` unless `name` sets another (a letter, then letters, digits or underscores, at most 64 characters). Rename it when another extension also registers `bg_wait`, because Pi refuses to start when two extensions register the same tool name; for example `{ "waitTool": { "name": "subagent_wait" } }`. Everything pi-subagents says about waiting then uses that name, children get the same name, and a child agent that should wait lists that name in its `tools`. When the window elapses, the tool returns a non-error `window_elapsed` result with the still-active work identities, and that work keeps running. Set `enabled` to `false` to make direct calls return immediately instead of blocking. The default is enabled. You can also set `"waitTool": false`; set `PI_SUBAGENT_WAIT_TOOL_ENABLED=false` (or `0`, `off`, `disabled`) to override config for one process. The effective enabled, default-timeout and name values are passed explicitly to child runtimes. Headless `agent_end` auto-drain continues across wait windows until required work completes or another stopping condition occurs. Invalid config or environment values fail instead of being coerced.
  
  
  Blocking `bg_wait({ id: "..." })` keeps the current tool call open until that run changes. By default it returns when a run needs attention, even when the run is still working normally, for example a `bash` command open longer than `activeNoticeAfterMs`; the result then says the run is still running. Use `bg_wait({ stopOnAttention: false })` for run-to-completion flows: it waits through idle time, a tool held open, or repeated tool failures, and still ends for a supervisor/contact request, a finished run, the timeout, user input, or abort. A steer or follow-up the operator sends while a blocking wait is open also ends it, with a non-error `user_input` result listing the still-active work, so the message reaches the model without waiting out the window. In a long-lived interactive parent session, `bg_wait({ id: "...", nonBlocking: true })` instead resolves the prefix once, persists the exact run identity, returns a subscription token immediately, and wakes that session on completion, failure, attention, reconciliation failure, or timeout. Use it for provider, detached, or other background work without a native completion notification; ordinary async subagent runs notify the parent natively and do not need a wait subscription. Armed subscriptions appear in ordinary `subagent({ action: "status" })` output and are not counted as active child work. A native completion notification goes to the Pi process that launched the run while that process is running; once it has exited, the session gets the result the next time it is open in any Pi. `nonBlocking` subscriptions need a host with a UI context, such as interactive or RPC mode; plain SDK embedding without a UI context rejects them.
-@@ -434,13 +434,13 @@ Forces depth-0 internal single, parallel, and chain runs into background mode an
+@@ -442,15 +442,13 @@ Forces depth-0 internal single, parallel, and chain runs into background mode an
  { "timeoutMs": 3600000 }
  ```
  
@@ -34,15 +34,17 @@ index a3f0f78..2983f0c 100644
 -This deadline bounds the whole run. The wait for a single model response is bounded separately by Pi's `httpIdleTimeoutMs` setting (default 300000; `0` disables it), which Pi applies both as the SDK request timeout and as the undici header/body idle timeout. Detached async runners read the same setting from `~/.pi/agent/settings.json` and the project `.pi/settings.json` for their own HTTP dispatcher, so a local model that queues or prefills for longer than five minutes needs `httpIdleTimeoutMs` raised or disabled in Pi settings, plus a `timeoutMs` long enough for the run.
 +This deadline bounds the whole run. The wait for a single model response is bounded separately by Pi's `httpIdleTimeoutMs` setting (default 300000; `0` disables it), which Pi applies both as the SDK request timeout and as the undici header/body idle timeout. Detached async runners read the same setting from `~/.pi/agent/settings.json` and the project `.pi/settings.json` for their own HTTP dispatcher, so a local model that queues or prefills for longer than five minutes needs `httpIdleTimeoutMs` raised or disabled in Pi settings, and any configured run deadline must also allow enough time.
  
--Use it when foreground orchestration or plain async single-agent runs need a longer default than 30 minutes. It does not set async composite top-level deadlines, and it does not replace async fan-out child deadlines.
+-In a non-interactive session (`pi -p`), the same value is how long Pi stays open at the end of a turn waiting for background subagent work to finish. When it is unset, Pi waits 30 minutes, then fails and exits if that work is still running.
 +Use it when foreground orchestration or plain async single-agent runs need a default deadline. It does not set async composite top-level deadlines, and it does not replace async fan-out child deadlines.
  
+-Use it when foreground orchestration or plain async single-agent runs need a longer default than 30 minutes. It does not set async composite top-level deadlines, and it does not replace async fan-out child deadlines.
+-
 -Composite async runs (async chains, parallel tasks, and scripted workflows) stay unbounded at the top level by design. Their runner children are bounded individually by their own agent or runner defaults, so this value does not cap them. Must be a positive integer no greater than `2147483647` (the largest delay a Node.js timer can honor, roughly 24.8 days); invalid or out-of-range values are ignored and the built-in defaults apply.
 +Composite async runs (async chains, parallel tasks, and scripted workflows) stay unbounded at the top level by design. Their runner children use explicit agent or runner deadlines when configured, so this value does not cap them. Must be a positive integer no greater than `2147483647` (the largest delay a Node.js timer can honor, roughly 24.8 days); invalid or out-of-range values are ignored.
  
  ## `toolTimeoutMs`
  
-@@ -450,7 +450,7 @@ Composite async runs (async chains, parallel tasks, and scripted workflows) stay
+@@ -460,7 +458,7 @@ Composite async runs (async chains, parallel tasks, and scripted workflows) stay
  
  Optional hard per-tool-call deadline in milliseconds. When configured, a child that emits `tool_execution_start` but not `tool_execution_end` is terminated with `timedOut: true` and a tool-specific error. The effective value is resolved per child: explicit `subagent` call value, then agent frontmatter, then this config value, then `PI_SUBAGENT_TOOL_TIMEOUT_MS`.
  
@@ -52,7 +54,7 @@ index a3f0f78..2983f0c 100644
  The tool timer tracks each active `toolCallId` separately and never extends the run-level deadline: when the remaining run budget is shorter, the ordinary run-level timeout wins. `contact_supervisor`, `intercom`, and `bg_wait` are exempt because their legitimate purpose can be to wait for a human, supervisor, or background run. Use hard tool timeouts only for wedge protection; an elapsed timeout is not a mutation-safe boundary. Configured values must be positive integers no greater than `2147483647`; invalid or out-of-range values are rejected with a visible error rather than silently ignored.
  
 diff --git a/docs/observability.md b/docs/observability.md
-index ef9421b4..c48dc4ef 100644
+index d349eef1edda21d3d1e6790314c5e604beac093b..ab9dba66a58322f7fbe83077bd16d487ab2146b8 100644
 --- a/docs/observability.md
 +++ b/docs/observability.md
 @@ -4,7 +4,7 @@ Where running subagents show up, how to inspect them, and the files and events t
@@ -65,10 +67,10 @@ index ef9421b4..c48dc4ef 100644
  A foreground child is a pi session created inside the parent Pi process, not a second `pi` process. A run timeout, tool timeout, interrupt, or stop aborts the child session and disposes it. Detach keeps the session running inside the parent and publishes the same receipt and completion notification as before.
  
 diff --git a/docs/tool-reference.md b/docs/tool-reference.md
-index a24e4a34..efbc2e59 100644
+index f6d9a88299664cc63b9fc4cd4ec4ef9128aca34f..6fa8deb970ba81e26353fea2e5e993781367df83 100644
 --- a/docs/tool-reference.md
 +++ b/docs/tool-reference.md
-@@ -105,7 +105,7 @@ The `subagent` tool schema lists `agent`, `task`, `workflow`, `args`, `async`, `
+@@ -106,7 +106,7 @@ The `subagent` tool schema lists `agent`, `task`, `workflow`, `args`, `async`, `
  | `options.chatProgress` | `auto \| off \| live-card` | `auto` | Workflow chat projection. `auto` renders a live in-chat card only for watched foreground workflows in the same Git repository, including managed worktrees; it is off otherwise. Explicit `live-card` requires `async:false` and the same Git repository. Async workflows have no inline live card, so omit `chatProgress` or use `auto`/`off`; use `async:false` only when the parent must block. |
  | `isolation` | `none \| worktree` | - | Alias kept at the top level; prefer `worktree`. Workflow child isolation. `none` runs in the shared cwd and does not need Git. `worktree` requires a managed Git worktree. Do not combine it with a contradictory `worktree` value. |
  | `options.baseRef` | string | `HEAD` | `HEAD` or a supported named ref such as `refs/heads/release`, `refs/tags/v1`, or `origin/main`. Full 40/64-character commit IDs and revision expressions such as `HEAD~1` are unsupported. The ref must resolve to a commit at worktree allocation; omitted values default to `HEAD` resolved at that time. Source-checkout cleanliness is still checked. For a workflow script, set it on the outer request as a default or on an individual `runs.run`/`runs.all` child to override it. |
@@ -78,10 +80,10 @@ index a24e4a34..efbc2e59 100644
  | `options.checkpointBeforeDeadlineMs` | number | none | Async single-agent runs only. The runner requests that the child "checkpoint and stop" this many milliseconds before the run deadline (finish the current tool call, report changed files, build/test state, remaining work, commit/PR state; start no new work). This best-effort steer uses the normal steering lifecycle at the next tool boundary, so the receipt is visible in status and events; the ordinary deadline kill still applies. Precedence: call value → config `checkpointBeforeDeadlineMs`. Disarmed when the deadline leaves under one second before the checkpoint. |
  | `options.toolBudget` | object | none | Optional child tool-call budget `{ soft?, hard, block? }`: `hard` is a positive integer and `soft`, if set, is a positive integer no greater than `hard`. At `soft` the child is nudged to finalize. After `hard`, configured tools are blocked; `block` defaults to `read`, `grep`, `find`, and `ls`, and accepts either a nonempty array of tool names or `"*"` for every tool call. Final assistant text is never blocked. |
 diff --git a/docs/workflows.md b/docs/workflows.md
-index 2b53d53a..0961ae33 100644
+index 3f127fcf3ce05b8a40ae3c77321983685a8a650f..199683d97b11d6d1402dfdfa29731b6001e2a1c5 100644
 --- a/docs/workflows.md
 +++ b/docs/workflows.md
-@@ -445,7 +445,7 @@ known, or for explicit emergency hotfix lanes.
+@@ -473,7 +473,7 @@ known, or for explicit emergency hotfix lanes.
  /prompt-workflow review-release-candidate v0.51.0
  ```
  
@@ -91,7 +93,7 @@ index 2b53d53a..0961ae33 100644
  Synchronous workflows publish trace and `emit(...)` updates through the tool update callback regardless of `chatProgress`, including RPC/headless and cross-repository runs. These updates include `details.workflow` and `details.workflowChildren`; `chatProgress: "off"` disables the live card, not transport progress. Once a child launches, its running row carries its `agent` and `runId`; for a child running in the background, that `runId` is the id of its run node in the `subagent-async` snapshot. Running foreground child rows additionally expose bounded `activity` (current tool, timing, and counters), plus resolved model/thinking when available, keyed by `childId`. Activity-only updates coalesce over 100 ms; lifecycle updates remain immediate. Activity clears when children settle, and is not persisted for async workflows. Tool names are limited to 256 UTF-8 bytes and each activity object is below 2 KiB (including JSON escaping); arguments and transcripts are not forwarded.
  
 diff --git a/install.mjs b/install.mjs
-index a2013309..7aef7c4e 100755
+index a2013309bdff2ee6d04f01f3c5abb54fde678bbe..7aef7c4e52f6e59f3f0f0eb9a1a8df4ac1a98785 100755
 --- a/install.mjs
 +++ b/install.mjs
 @@ -14,7 +14,7 @@ import * as path from "node:path";
@@ -103,11 +105,24 @@ index a2013309..7aef7c4e 100755
  
  const args = process.argv.slice(2);
  const isRemove = args.includes("--remove") || args.includes("-r");
+diff --git a/src/extension/config.ts b/src/extension/config.ts
+index a0ec54678f57e8b859a911cf2d73b7ba6dffab23..148ab127e229d01d385644ce84220dd911e5b8d5 100644
+--- a/src/extension/config.ts
++++ b/src/extension/config.ts
+@@ -232,7 +232,7 @@ function validateConfig(config: Record<string, unknown>): void {
+ /**
+  * Resolve the optional global default runtime deadline from extension config
+  * (`config.timeoutMs`). Returns undefined for unset or invalid values so callers
+- * fall back to the built-in defaults. "Invalid" covers non-positive-integer
++ * use no configured deadline. "Invalid" covers non-positive-integer
+  * values and values above the Node.js timer ceiling; the latter would overflow
+  * the timer and expire the run almost immediately instead of running long.
+  */
 diff --git a/src/extension/schemas.ts b/src/extension/schemas.ts
-index c2b7c989..2a8bdf23 100644
+index 3dd9c3dbc04a82cee7a157131d42e602b84a3648..598b7fbe216195492722f2c05101ef693af435c4 100644
 --- a/src/extension/schemas.ts
 +++ b/src/extension/schemas.ts
-@@ -238,7 +238,7 @@ const SubagentParamProperties = {
+@@ -237,7 +237,7 @@ const SubagentParamProperties = {
  		description: "fresh/fork overrides every child; profile requires agent's declared defaultContext, ignoring config. Omitted: defaultSubagentContext wins over each agent defaultContext; implicit fork needs persisted parent + leaf, else fresh. forkContext may prune forks before spawn.",
  	})),
  	async: Type.Optional(Type.Boolean({ description: "Background; default asyncByDefault. false only to block parent." })),
@@ -117,10 +132,10 @@ index c2b7c989..2a8bdf23 100644
  	checkpointBeforeDeadlineMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647, description: "Async single-agent runs only: the runner requests that the child checkpoint and stop this many ms before the run deadline (best-effort; the deadline kill still applies)." })),
  	toolTimeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Per-tool deadline (ms); fast builtins default 5m." })),
 diff --git a/src/runs/background/async-execution.ts b/src/runs/background/async-execution.ts
-index e49d5d92..8b03e0a2 100644
+index b6ca6912ce5a75c421ff6d118344953505de8582..5f75377357f84b06788acf1aebef7efc9abc5acd 100644
 --- a/src/runs/background/async-execution.ts
 +++ b/src/runs/background/async-execution.ts
-@@ -207,7 +207,7 @@ function parentExtensionProviderForChild(ctx: AsyncExecutionContext, disableAmbi
+@@ -206,7 +206,7 @@ function parentExtensionProviderForChild(ctx: AsyncExecutionContext, disableAmbi
  	return provider && ctx.parentProviderRegistry.getRegisteredProviderIds().includes(provider) ? provider : undefined;
  }
  
@@ -129,7 +144,7 @@ index e49d5d92..8b03e0a2 100644
  
  interface AsyncChainParams {
  	chain: ChainStep[];
-@@ -1317,7 +1317,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
+@@ -1344,7 +1344,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
  			outputMode: behavior.outputMode,
  			sessionFile,
  			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
@@ -139,19 +154,19 @@ index e49d5d92..8b03e0a2 100644
  			waitToolEnabled: params.waitToolEnabled,
  			waitToolDefaultTimeoutMs: params.waitToolDefaultTimeoutMs,
 diff --git a/src/runs/background/auto-drain.ts b/src/runs/background/auto-drain.ts
-index 7e902d4c..fbd22856 100644
+index c18e204213bc47e9412111695e31c1e5b4d6ecb5..d5186f1867a7c517a66f32c0071abd6fbac80541 100644
 --- a/src/runs/background/auto-drain.ts
 +++ b/src/runs/background/auto-drain.ts
-@@ -4,7 +4,7 @@ import { listAsyncRuns } from "./async-status.ts";
- import type { ReadonlyDrainObservation } from "../shared/readonly-drain-observation.ts";
+@@ -5,7 +5,7 @@ import type { ReadonlyDrainObservation } from "../shared/readonly-drain-observat
  import { backgroundWorkForSession, waitForSubagents, waitRunScopes, type SubagentWaitDeps, type SubagentWaitParams, type WaitEventBus } from "./subagent-wait.ts";
+ import { waitToolName } from "../../shared/wait-tool-name.ts";
  
 -export const DEFAULT_AUTO_DRAIN_TIMEOUT_MS = 30 * 60 * 1000;
 +const AUTO_DRAIN_WAIT_WINDOW_MS = 30 * 60 * 1000;
  
  export interface AutoDrainDeps extends Pick<SubagentWaitDeps, "asyncDirRoot" | "resultsDir" | "nestedRootRunId"> {
  	state: SubagentState;
-@@ -45,9 +45,9 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
+@@ -46,9 +46,9 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
  	try {
  		if (!sessionId) throw new Error("Cannot auto-drain background work without an active session identity.");
  		const now = deps.now ?? Date.now;
@@ -164,7 +179,7 @@ index 7e902d4c..fbd22856 100644
  		const hasWork = deps.hasWork ?? ((id: string, time: number) => hasOutstandingWork(deps, id, time, observation));
  		const wait = deps.wait ?? waitForSubagents;
  
-@@ -57,7 +57,7 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
+@@ -58,7 +58,7 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
  			const work = hasWork(sessionId, now());
  			observation?.predicate(work);
  			if (!work) break;
@@ -174,10 +189,10 @@ index 7e902d4c..fbd22856 100644
  				throw new Error(`Auto-drain timed out after ${timeoutMs}ms with background work still active in session '${sessionId}'.`);
  			}
 diff --git a/src/runs/foreground/subagent-executor.ts b/src/runs/foreground/subagent-executor.ts
-index 32327a03..c7c7afa4 100644
+index cca1a21880fc5e508b58aebbaf5f49528f9e0e21..72f1d5e34330a9e3a6556be534993cdf47f0ae77 100644
 --- a/src/runs/foreground/subagent-executor.ts
 +++ b/src/runs/foreground/subagent-executor.ts
-@@ -48,7 +48,7 @@ import {
+@@ -49,7 +49,7 @@ import {
  	type SequentialStep,
  } from "../../shared/settings.ts";
  import { normalizeSkillInput } from "../../agents/skills.ts";
@@ -186,7 +201,7 @@ index 32327a03..c7c7afa4 100644
  import { updateActiveRunIndex } from "../background/active-run-index.ts";
  import { steeringReceipt } from "../background/steering.ts";
  import { acquireActiveAsyncCapacity, ActiveAsyncCapacityError, getActiveAsyncCapacitySnapshot, resolveAbandonedSlotReleaseAfterMs, resolveMaxActiveAsyncRunsPerSession, transferActiveAsyncCapacity, type ActiveAsyncCapacityHandle } from "../background/active-async-capacity.ts";
-@@ -3022,18 +3022,6 @@ function validateLaunchOutputSchemaOverrides(params: SubagentParamsLike): string
+@@ -3091,18 +3091,6 @@ function validateLaunchOutputSchemaOverrides(params: SubagentParamsLike): string
  	return undefined;
  }
  
@@ -205,16 +220,7 @@ index 32327a03..c7c7afa4 100644
  /**
   * Maximum delay a Node.js timer accepts. Values above the 32-bit signed integer
   * ceiling overflow `setTimeout`, which silently clamps the delay to ~1ms and
-@@ -3052,7 +3040,7 @@ function timerDelayOverflowError(name: string, value: unknown): string | undefin
- /**
-  * Resolve the optional global default runtime deadline from extension config
-  * (`config.timeoutMs`). Returns undefined for unset or invalid values so callers
-- * fall back to the built-in defaults. "Invalid" covers non-positive-integer
-+ * use no configured deadline. "Invalid" covers non-positive-integer
-  * values and values above `MAX_TIMER_DELAY_MS`; the latter would overflow the
-  * Node.js timer and expire the run almost immediately instead of running long.
-  */
-@@ -3084,10 +3072,10 @@ export function resolveForegroundTimeout(params: SubagentParamsLike, defaultTime
+@@ -3141,10 +3129,10 @@ export function resolveForegroundTimeout(params: SubagentParamsLike, defaultTime
  
  /**
   * Resolve the effective launch timeout for a single-agent run, applying the
@@ -227,7 +233,7 @@ index 32327a03..c7c7afa4 100644
   * The async default is deliberately applied only to plain single-agent launches.
   * Composite launches keep their top-level execution unbounded when no timeout is
   * set — even with a config default — while their runner children resolve separate
-@@ -3095,9 +3083,7 @@ export function resolveForegroundTimeout(params: SubagentParamsLike, defaultTime
+@@ -3152,9 +3140,7 @@ export function resolveForegroundTimeout(params: SubagentParamsLike, defaultTime
   */
  export function resolveSingleAgentLaunchTimeout(params: SubagentParamsLike, async: boolean, configDefaultTimeoutMs?: number): { timeoutMs?: number; error?: string } {
  	const isComposite = (params.chain?.length ?? 0) > 0 || (params.tasks?.length ?? 0) > 0 || params.workflowScript !== undefined;
@@ -238,7 +244,7 @@ index 32327a03..c7c7afa4 100644
  	return resolveForegroundTimeout(params, defaultTimeoutMs);
  }
  
-@@ -5592,7 +5578,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
+@@ -5662,7 +5648,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
  				const overflowError = timerDelayOverflowError(name, value);
  				if (overflowError) return buildRequestedModeError(requestParams, overflowError);
  			}
@@ -247,7 +253,7 @@ index 32327a03..c7c7afa4 100644
  			const workflowUsageBudget = validateUsageBudgetConfig(requestParams.usageBudget ?? deps.config.usageBudget, requestParams.usageBudget ? "usageBudget" : "config.usageBudget");
  			if (workflowUsageBudget.error) return buildRequestedModeError(requestParams, workflowUsageBudget.error);
  			const workflowCwd = resolveRequestedCwd(parentCwd, requestParams.cwd);
-@@ -7710,6 +7696,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
+@@ -7815,6 +7801,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
  		// blocks are stripped from the inherited transcript by the resolver (they are bound
  		// to the parent session), which is not a reason to disable the child's own reasoning.
  		let sessionRunId: string | undefined;
@@ -255,7 +261,7 @@ index 32327a03..c7c7afa4 100644
  		try {
  			assertLaunchableAgentsAllowedBeforeFork();
  			const pruneSession = contextPolicy.usesFork && deps.config.forkContext?.mode === "pruned"
-@@ -7724,6 +7711,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
+@@ -7829,6 +7816,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
  						if (!sessionRunId) throw new Error("A fork session was requested before the launch's run id was assigned.");
  						return sessionRunId;
  					},
@@ -265,7 +271,7 @@ index 32327a03..c7c7afa4 100644
  				},
  			);
  			prepareForkSessionForIndex = forkContextResolver.prepareSessionForIndex;
-@@ -7850,7 +7840,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
+@@ -7962,7 +7952,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
  				contextPolicy.contextSummary,
  			);
  		}
@@ -275,7 +281,7 @@ index 32327a03..c7c7afa4 100644
  		const forkSessionFileForTask: ForkSessionFileForTask = (agentName, idx = 0) => {
  			if (!shouldForkAgent(contextPolicy, agentName)) return undefined;
 diff --git a/src/shared/fork-context.ts b/src/shared/fork-context.ts
-index 59714f77..3bd1f037 100644
+index 59714f77d60487cd4f8994ba93284e957bfc969c..3bd1f0372383362d5e43a2ed9fb0372ed8867bd5 100644
 --- a/src/shared/fork-context.ts
 +++ b/src/shared/fork-context.ts
 @@ -51,6 +51,8 @@ interface ForkContextResolverOptions {
@@ -322,7 +328,7 @@ index 59714f77..3bd1f037 100644
  			const sessionFile = sourceManager.createBranchedSession(leafId);
  			if (!sessionFile) {
 diff --git a/src/shared/types.ts b/src/shared/types.ts
-index 006652b9..b37a0187 100644
+index 8344573147167061ace11ad83685fec7ad90526f..e70b004d444bba44b8e49dddd1e0c14186124be4 100644
 --- a/src/shared/types.ts
 +++ b/src/shared/types.ts
 @@ -2793,12 +2793,11 @@ export interface ExtensionConfig {
@@ -344,10 +350,10 @@ index 006652b9..b37a0187 100644
  	 */
  	timeoutMs?: number;
 diff --git a/test/integration/async-execution.part-1.test.ts b/test/integration/async-execution.part-1.test.ts
-index 314b8d28..a64fa106 100644
+index a5a4d574bdfed98d884a1976d19f643424afeff3..c114cb07222ae5a3b1141a943afb6af938972168 100644
 --- a/test/integration/async-execution.part-1.test.ts
 +++ b/test/integration/async-execution.part-1.test.ts
-@@ -1162,6 +1162,58 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
+@@ -1154,6 +1154,58 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
  		assert.equal(status.steps?.[0]?.sessionFile, path.join(tempDir, "parent-fork-layout", "forks", id, "forked.jsonl"));
  	});
  
@@ -406,11 +412,25 @@ index 314b8d28..a64fa106 100644
  	it("launches foreground and background children with the parent session's project trust", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
  		const executor = makeAsyncExecutor([makeAgent("worker")]);
  		const ctx = { ...makeMinimalCtx(tempDir), isProjectTrusted: () => false };
+diff --git a/test/integration/intercom-result-delivery.test.ts b/test/integration/intercom-result-delivery.test.ts
+index abd2372b2994e1d4f5ab87bb714fd4efa169ecda..e9afc0264aef86b8dbe04a44b1c41b8dd80f67e3 100644
+--- a/test/integration/intercom-result-delivery.test.ts
++++ b/test/integration/intercom-result-delivery.test.ts
+@@ -1246,7 +1246,8 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not
+ 			revivedId = result.details?.asyncId;
+ 			assert.ok(revivedId);
+ 			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
+-			await waitForFile(resultPath);
++			// This observes runner startup, native Git worktree setup and patch capture too.
++			await waitForFile(resultPath, process.platform === "win32" ? 30_000 : 10_000);
+ 			const status = await waitForStatus(path.join(ASYNC_DIR, revivedId, "status.json"), (candidate) => candidate.state === "complete");
+ 			assert.equal(fs.existsSync(path.join(tempDir, "feature.txt")), false);
+ 			assert.equal(status.parallelHandoff?.changedPatches, 1);
 diff --git a/test/integration/single-execution.part-2.test.ts b/test/integration/single-execution.part-2.test.ts
-index 5bd4b7ab..23c48128 100644
+index 1156c5d9fc88a56bc3370500b765d10db8565211..07302e9771455b3a94287a3fb0eca409b93eefc5 100644
 --- a/test/integration/single-execution.part-2.test.ts
 +++ b/test/integration/single-execution.part-2.test.ts
-@@ -20,6 +20,7 @@ import {
+@@ -9,6 +9,7 @@ import {
  	type RuntimeAcknowledgedExtensions, type RunSyncResult, type ExecutorToolResult,
  } from "../support/single-execution-fixture.ts";
  import assert from "node:assert/strict";
@@ -418,7 +438,7 @@ index 5bd4b7ab..23c48128 100644
  import * as fs from "node:fs";
  import * as path from "node:path";
  import { execFileSync } from "node:child_process";
-@@ -1693,6 +1694,81 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -1682,6 +1683,81 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  		}
  	});
  
@@ -500,7 +520,7 @@ index 5bd4b7ab..23c48128 100644
  	it("completes no-edit foreground runs independently of task prose and tool capability", async () => {
  		const cleanRepo = path.join(tempDir, "no-edit-clean-repo");
  		fs.mkdirSync(cleanRepo);
-@@ -4179,7 +4255,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4168,7 +4244,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  		assert.equal(mockPi.callCount(), 0);
  	});
  
@@ -509,7 +529,7 @@ index 5bd4b7ab..23c48128 100644
  		mockPi.onCall({ output: "package default" });
  		mockPi.onCall({ output: "explicit timeout" });
  		mockPi.onCall({ output: "max runtime alias" });
-@@ -4193,8 +4269,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4182,8 +4258,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  			undefined,
  			makeMinimalCtx(tempDir),
  		);
@@ -519,7 +539,7 @@ index 5bd4b7ab..23c48128 100644
  
  		const explicitResult = await defaultExecutor.execute(
  			"foreground-timeout-explicit",
-@@ -4233,7 +4308,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4222,7 +4297,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  		mockPi.onCall({ output: "agent over config" });
  		mockPi.onCall({ output: "invalid config ignored" });
  
@@ -528,7 +548,7 @@ index 5bd4b7ab..23c48128 100644
  		const configExecutor = makeExecutor([makeAgent("echo")], { timeoutMs: NINETY_MIN });
  		const configResult = await configExecutor.execute(
  			"config-timeout-default",
-@@ -4264,7 +4339,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4253,7 +4328,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  		);
  		assert.equal(agentResult.details?.timeoutMs, 4_000);
  
@@ -537,7 +557,7 @@ index 5bd4b7ab..23c48128 100644
  		const invalidResult = await makeExecutor([makeAgent("echo")], { timeoutMs: -1 }).execute(
  			"config-timeout-invalid",
  			{ agent: "echo", task: "Task", async: false },
-@@ -4272,7 +4347,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
+@@ -4261,7 +4336,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
  			undefined,
  			makeMinimalCtx(tempDir),
  		);
@@ -547,7 +567,7 @@ index 5bd4b7ab..23c48128 100644
  
  	it("applies the global config timeout default to foreground workflow scripts", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 diff --git a/test/unit/async-execution.test.ts b/test/unit/async-execution.test.ts
-index a297cb10..f6fe07e9 100644
+index 3555f145d23a5122ab4287a613525e57b4967b70..f60cdd989fbd7b1c121d7f7a85d4c8cc54601a41 100644
 --- a/test/unit/async-execution.test.ts
 +++ b/test/unit/async-execution.test.ts
 @@ -4,7 +4,7 @@ import * as os from "node:os";
@@ -559,7 +579,7 @@ index a297cb10..f6fe07e9 100644
  import type { AgentConfig } from "../../src/agents/agents.ts";
  import { SUBAGENT_PROCESS_TERMINAL_EVENT } from "../../src/shared/types.ts";
  import { registerRequiredChildExtensions } from "../../src/api/required-child-extensions.ts";
-@@ -242,10 +242,10 @@ describe("async runner execution", () => {
+@@ -255,10 +255,10 @@ describe("async runner execution", () => {
  		});
  
  		assert.ok("steps" in result, "expected successful step build");
@@ -573,7 +593,7 @@ index a297cb10..f6fe07e9 100644
  
  	it("uses agent tool budget before config default when no run override exists", () => {
 diff --git a/test/unit/auto-drain.test.ts b/test/unit/auto-drain.test.ts
-index ce1e84c9..69793d7b 100644
+index ce1e84c9a8c84bc7f2c174a6b84f2dbdfd20869a..69793d7b9710a58637569ea679a5881c9b2d5254 100644
 --- a/test/unit/auto-drain.test.ts
 +++ b/test/unit/auto-drain.test.ts
 @@ -84,6 +84,22 @@ describe("headless background-work auto-drain", () => {
@@ -600,7 +620,7 @@ index ce1e84c9..69793d7b 100644
  		await assert.rejects(() => drainOutstandingWork({
  			state: state(),
 diff --git a/test/unit/fork-context.test.ts b/test/unit/fork-context.test.ts
-index e377b58b..28e83b15 100644
+index e377b58b890f442b110824e62a80efa531752fc6..28e83b15191cc1596b5139ea16307c33f2728eee 100644
 --- a/test/unit/fork-context.test.ts
 +++ b/test/unit/fork-context.test.ts
 @@ -211,6 +211,46 @@ describe("createForkContextResolver", () => {
@@ -651,7 +671,7 @@ index e377b58b..28e83b15 100644
  		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-user-only-"));
  		try {
 diff --git a/test/unit/schemas.test.ts b/test/unit/schemas.test.ts
-index 6e5444d0..c328d727 100644
+index 6e5444d084caef1935b608f6bc684ab888c6588e..c328d727b5edecb13eab606ddc137d0d2855d814 100644
 --- a/test/unit/schemas.test.ts
 +++ b/test/unit/schemas.test.ts
 @@ -317,7 +317,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
@@ -664,18 +684,19 @@ index 6e5444d0..c328d727 100644
  		assert.doesNotMatch(String(timeoutSchema.description ?? ""), /foreground-only/i);
  		assert.match(String(maxRuntimeSchema.description ?? ""), /timeoutMs/i);
 diff --git a/test/unit/timeout-defaults.test.ts b/test/unit/timeout-defaults.test.ts
-index d9f08b28..7ed5a65b 100644
+index 14ce4486f020fbba30f3e171c832acfa55a778cb..c031cb94fdcce517b0edff82c3c67cafd5ce13b9 100644
 --- a/test/unit/timeout-defaults.test.ts
 +++ b/test/unit/timeout-defaults.test.ts
-@@ -1,23 +1,14 @@
+@@ -1,23 +1,12 @@
  import assert from "node:assert/strict";
  import { describe, it } from "node:test";
- import {
+-import {
 -	DEFAULT_ASYNC_TIMEOUT_MS,
 -	DEFAULT_FOREGROUND_TIMEOUT_MS,
- 	resolveConfigDefaultTimeoutMs,
- 	resolveSingleAgentLaunchTimeout,
- } from "../../src/runs/foreground/subagent-executor.ts";
+-	resolveSingleAgentLaunchTimeout,
+-} from "../../src/runs/foreground/subagent-executor.ts";
++import { resolveSingleAgentLaunchTimeout } from "../../src/runs/foreground/subagent-executor.ts";
+ import { resolveConfigDefaultTimeoutMs } from "../../src/extension/config.ts";
  
  describe("single-agent launch timeout wiring", () => {
 -	it("async runs default to DEFAULT_ASYNC_TIMEOUT_MS when no explicit/agent timeout", () => {
@@ -694,17 +715,3 @@ index d9f08b28..7ed5a65b 100644
  	});
  
  	it("explicit timeoutMs wins over the async default", () => {
-diff --git a/test/integration/intercom-result-delivery.test.ts b/test/integration/intercom-result-delivery.test.ts
-index abd2372b..e9afc026 100644
---- a/test/integration/intercom-result-delivery.test.ts
-+++ b/test/integration/intercom-result-delivery.test.ts
-@@ -1246,7 +1246,8 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not
- 			revivedId = result.details?.asyncId;
- 			assert.ok(revivedId);
- 			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
--			await waitForFile(resultPath);
-+			// This observes runner startup, native Git worktree setup and patch capture too.
-+			await waitForFile(resultPath, process.platform === "win32" ? 30_000 : 10_000);
- 			const status = await waitForStatus(path.join(ASYNC_DIR, revivedId, "status.json"), (candidate) => candidate.state === "complete");
- 			assert.equal(fs.existsSync(path.join(tempDir, "feature.txt")), false);
- 			assert.equal(status.parallelHandoff?.changedPatches, 1);

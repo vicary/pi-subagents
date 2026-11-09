@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 export LC_ALL=C
+case ${1:-sync} in sync|verify) ;; *) echo 'Usage: sync.sh [sync|verify]' >&2; exit 2 ;; esac
 upstream=https://github.com/nicobailon/pi-subagents.git
 baseline=31208242
 patch=$(mktemp)
@@ -9,7 +10,6 @@ index=$(mktemp)
 ledger=$(mktemp)
 rm -f "$index"
 trap 'rm -f "$patch" "$index" "$ledger"' EXIT
-cp .github/scripts/fork.patch "$patch"
 git fetch --prune --no-tags origin '+refs/heads/main:refs/remotes/origin/main' '+refs/tags/*:refs/fork-tags/*'
 git fetch --prune --no-tags "$upstream" '+refs/heads/main:refs/remotes/upstream/main' '+refs/tags/*:refs/upstream-tags/*'
 old=$(git rev-parse refs/remotes/origin/main)
@@ -34,6 +34,36 @@ while read -r recorded_tag recorded_commit; do
 done < "$ledger"
 [ "$(git rev-parse 'refs/upstream-tags/v0.83.1^{commit}')" = "$(git rev-parse "$baseline^{commit}")" ] || { echo 'Upstream baseline tag changed' >&2; exit 1; }
 
+# Integrate net changes once. Both histories remain ancestors of the result,
+# so later syncs do not replay obsolete fork commits or their old conflicts.
+upstream_commit=$(git rev-parse refs/remotes/upstream/main)
+base=$(git merge-base "$old" "$upstream_commit")
+git merge-base --is-ancestor "$baseline" "$base" || { echo 'Fork and upstream have an unsupported merge base; no refs pushed.' >&2; exit 1; }
+new=$old
+if ! git merge-base --is-ancestor "$upstream_commit" "$old"; then
+  if ! merge_output=$(git merge-tree --write-tree "$old" "$upstream_commit"); then
+    printf '%s\n' "$merge_output" >&2
+    echo 'Upstream merge conflicts with current fork changes. Resolve once on main, then rerun; no refs pushed.' >&2
+    exit 1
+  fi
+  tree=${merge_output%%$'\n'*}
+  git cat-file -e "$tree^{tree}"
+  new=$(printf 'chore(sync): merge upstream changes\n' | env GIT_AUTHOR_NAME='pi-subagents fork sync' GIT_AUTHOR_EMAIL='fork-sync@users.noreply.github.com' GIT_COMMITTER_NAME='pi-subagents fork sync' GIT_COMMITTER_EMAIL='fork-sync@users.noreply.github.com' git commit-tree "$tree" -p "$old" -p "$upstream_commit")
+fi
+
+# The replay patch is generated from the qualified application tree, not a
+# historical commit stack. Automation and the release ledger own separate paths.
+patch_path=.github/scripts/fork.patch
+git diff --binary --full-index --no-ext-diff --no-textconv "$upstream_commit" "$new" -- . ':(exclude).github/scripts' ':(exclude).github/workflows/sync.yml' ':(exclude).github/workflows/release.yml' ':(exclude).github/release-ledger' > "$patch"
+blob=$(git hash-object -w "$patch")
+if [ "$(git rev-parse "$new:$patch_path")" != "$blob" ]; then
+  rm -f "$index"
+  GIT_INDEX_FILE="$index" git read-tree "$new"
+  printf '100644 %s\t%s\n' "$blob" "$patch_path" | GIT_INDEX_FILE="$index" git update-index --index-info
+  tree=$(GIT_INDEX_FILE="$index" git write-tree)
+  new=$(printf 'chore(sync): refresh fork replay patch\n' | env GIT_AUTHOR_NAME='pi-subagents fork sync' GIT_AUTHOR_EMAIL='fork-sync@users.noreply.github.com' GIT_COMMITTER_NAME='pi-subagents fork sync' GIT_COMMITTER_EMAIL='fork-sync@users.noreply.github.com' git commit-tree "$tree" -p "$new")
+fi
+
 # Recreate each release from its exact upstream commit, not from fork main.
 refs=()
 while IFS= read -r ref; do
@@ -52,7 +82,7 @@ while IFS= read -r ref; do
     fi
     continue
   fi
-  git merge-base --is-ancestor "$base" refs/remotes/upstream/main || { echo "$tag is not on upstream main" >&2; exit 1; }
+  git merge-base --is-ancestor "$base" "$upstream_commit" || { echo "$tag is not on upstream main" >&2; exit 1; }
   actual=$(git show "$base:package.json" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')
   [ "$actual" = "$version" ] || { echo "$tag has package version $actual" >&2; exit 1; }
   forkref=refs/fork-tags/$tag
@@ -66,12 +96,15 @@ while IFS= read -r ref; do
   fi
   rm -f "$index"
   GIT_INDEX_FILE="$index" git read-tree "$base"
-  GIT_INDEX_FILE="$index" git apply --cached --3way "$patch" || { echo "HARD BLOCKER: fork patch cannot be replayed on upstream tag $tag ($base); historical port required; no refs pushed" >&2; exit 1; }
+  # An empty net patch is an identity application when upstream absorbs the fork.
+  if [ -s "$patch" ]; then
+    GIT_INDEX_FILE="$index" git apply --cached --3way "$patch" || { echo "HARD BLOCKER: fork patch cannot be replayed on upstream tag $tag ($base); historical port required; no refs pushed" >&2; exit 1; }
+  fi
   # Before the ledger existed, releases had no automation overlay. Accept that
-  # deterministic legacy tree, or the independently trusted current main tree.
+  # deterministic legacy tree, or the qualified candidate automation snapshot.
   legacy_tree=$(GIT_INDEX_FILE="$index" git write-tree)
-  if git cat-file -e "$old:.github/scripts/sync.sh" 2>/dev/null; then
-    git ls-tree -r "$old" -- .github/scripts .github/workflows/sync.yml .github/workflows/release.yml | GIT_INDEX_FILE="$index" git update-index --index-info
+  if git cat-file -e "$new:.github/scripts/sync.sh" 2>/dev/null; then
+    git ls-tree -r "$new" -- .github/scripts .github/workflows/sync.yml .github/workflows/release.yml | GIT_INDEX_FILE="$index" git update-index --index-info
   fi
   tree=$(GIT_INDEX_FILE="$index" git write-tree)
   make_commit() {
@@ -90,23 +123,6 @@ while IFS= read -r ref; do
   ledger_changed=true
 done < <(git for-each-ref --format='%(refname)' refs/upstream-tags/)
 
-if [ "${1:-sync}" = verify ]; then
-  [ ${#refs[@]} -eq 0 ] || { echo 'Fork tags are missing; rerun sync first' >&2; exit 1; }
-  exit 0
-fi
-[ "${1:-sync}" = sync ] || exit 2
-new=$old
-if ! git merge-base --is-ancestor refs/remotes/upstream/main "$old"; then
-  base=$(git merge-base "$old" refs/remotes/upstream/main)
-  git merge-base --is-ancestor "$baseline" "$base" || { echo 'Fork and upstream have an unsupported merge base' >&2; exit 1; }
-  git checkout --detach "$old"
-  if ! git -c user.name='pi-subagents fork sync' -c user.email='fork-sync@users.noreply.github.com' rebase --onto refs/remotes/upstream/main "$base"; then
-    git rebase --abort || true
-    echo 'Rebase failed; aborted locally. Resolve the fork patch against upstream and rerun; no refs pushed.' >&2
-    exit 1
-  fi
-  new=$(git rev-parse HEAD)
-fi
 if [ "$ledger_changed" = true ]; then
   # Commit the independent tag identities on main in the same atomic push as
   # newly created tags. Plumbing avoids touching the checkout or its index.
@@ -115,7 +131,15 @@ if [ "$ledger_changed" = true ]; then
   blob=$(git hash-object -w "$ledger")
   printf '100644 %s\t%s\n' "$blob" "$ledger_path" | GIT_INDEX_FILE="$index" git update-index --index-info
   tree=$(GIT_INDEX_FILE="$index" git write-tree)
-  new=$(printf 'Record verified fork release tags\n' | env GIT_AUTHOR_NAME='pi-subagents fork sync' GIT_AUTHOR_EMAIL='fork-sync@users.noreply.github.com' GIT_COMMITTER_NAME='pi-subagents fork sync' GIT_COMMITTER_EMAIL='fork-sync@users.noreply.github.com' git commit-tree "$tree" -p "$new")
+  new=$(printf 'chore(sync): record verified fork release tags\n' | env GIT_AUTHOR_NAME='pi-subagents fork sync' GIT_AUTHOR_EMAIL='fork-sync@users.noreply.github.com' GIT_COMMITTER_NAME='pi-subagents fork sync' GIT_COMMITTER_EMAIL='fork-sync@users.noreply.github.com' git commit-tree "$tree" -p "$new")
+fi
+# A sync must never discard fork history or claim an unintegrated upstream.
+git merge-base --is-ancestor "$old" "$new" && git merge-base --is-ancestor "$upstream_commit" "$new" || { echo 'Candidate does not preserve both fork and upstream history; no refs pushed.' >&2; exit 1; }
+if [ "${1:-sync}" = verify ]; then
+  [ ${#refs[@]} -eq 0 ] || { echo 'Fork tags are missing; rerun sync first' >&2; exit 1; }
+  [ "$new" = "$old" ] || { echo 'Fork main needs synchronization; rerun sync first; no refs pushed.' >&2; exit 1; }
+  echo 'Verified upstream integration, replay patch, and release tags; no push.'
+  exit 0
 fi
 if [ "$new" = "$old" ] && [ ${#refs[@]} -eq 0 ]; then
   echo 'Already synchronized; no push.'
