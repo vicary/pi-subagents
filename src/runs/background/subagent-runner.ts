@@ -103,7 +103,7 @@ import { persistRunnerStartupFailure } from "./runner-startup-failure.ts";
 import { currentRecordedPid } from "./boot-id.ts";
 import type { RecordedPid } from "./stale-run-reconciler.ts";
 import { createSteeringStatus, recordSteeringRequest, steeringStatus, terminalSteeringNoticeState, unconsumedSteerReason, updateSteeringTarget } from "./steering.ts";
-import { PROMPT_REDACTED, SUBAGENT_STOPPED_MESSAGE, SUBAGENT_TIMED_OUT_MESSAGE, detectSubagentError, extractTextFromContent, extractToolArgsPreview, formatEmptyTerminalAssistantResponseError, getAgentDir, getFinalOutput, hasEmptyTerminalAssistantResponse, readStatus } from "../../shared/utils.ts";
+import { PROMPT_REDACTED, SUBAGENT_STOPPED_MESSAGE, SUBAGENT_TIMED_OUT_MESSAGE, TRUNCATED_RESPONSE_ERROR, detectSubagentError, extractTextFromContent, extractToolArgsPreview, formatEmptyTerminalAssistantResponseError, getAgentDir, getFinalOutput, getTerminalAssistantStopReason, hasEmptyTerminalAssistantResponse, readStatus } from "../../shared/utils.ts";
 import { planAbortRecovery } from "../shared/abort-recovery.ts";
 import {
 	createMutatingFailureState,
@@ -1310,6 +1310,13 @@ export async function runSingleStepInner(
 			&& (!hiddenError?.hasError || hasEmptyTerminalAssistantResponse(run.messages))
 			? formatEmptyTerminalAssistantResponseError(run.messages)
 			: undefined;
+		const truncatedResponseError = terminalDiagnosticsEligible && run.exitCode === 0 && !run.error && !toolAvailabilityError && !structuredError && !midToolExitError
+			&& !emptyOutputError
+			&& !hiddenError?.hasError
+			&& !validatedStructuredOutput
+			&& getTerminalAssistantStopReason(run.messages) === "length"
+			? TRUNCATED_RESPONSE_ERROR
+			: undefined;
 		const remoteGitChanged = run.nativeMachine?.initialGit && run.nativeMachine.finalGit ? run.nativeMachine.initialGit.head !== run.nativeMachine.finalGit.head || run.nativeMachine.initialGit.dirty !== run.nativeMachine.finalGit.dirty : undefined;
 		const mutationEvidence = run.nativeMachine && !isRexLocalMachine(step.machine) ? { source: "tracked-files" as const, trackedOnly: true as const, changedFiles: [], attemptedMutation: remoteGitChanged === true, ...(remoteGitChanged === undefined ? { unavailable: "Remote Git before/after evidence was incomplete." } : {}) } : await collectTrackedMutationEvidence(mutationSnapshot, step.cwd ?? ctx.cwd);
 		finalMutationEvidence = mutationEvidence;
@@ -1327,7 +1334,7 @@ export async function runSingleStepInner(
 		finalRequiredOutputMissing = requiredOutput?.missing;
 		const missingRequiredOutputError = terminalDiagnosticsEligible ? formatRequiredOutputError(requiredOutput) : undefined;
 		const missingRequiredOutputAfterMutation = Boolean(missingRequiredOutputError) && (mutationAttemptObserved || Boolean(mutationEvidence.changedFiles.length));
-		const effectiveExitCode = toolAvailabilityError || midToolExitError || structuredError || emptyOutputError || missingRequiredOutputError
+		const effectiveExitCode = toolAvailabilityError || midToolExitError || structuredError || truncatedResponseError || emptyOutputError || missingRequiredOutputError
 			? 1
 			: hiddenError?.hasError
 				? (hiddenError.exitCode ?? 1)
@@ -1339,6 +1346,7 @@ export async function runSingleStepInner(
 			?? structuredError
 			?? run.error
 			?? emptyOutputError
+			?? truncatedResponseError
 			?? (missingRequiredOutputAfterMutation ? missingRequiredOutputError : undefined)
 			?? (hiddenError?.hasError
 				? hiddenError.details
@@ -2884,7 +2892,7 @@ export async function runSubagent(
 		index: number,
 		state: SteeringTargetState,
 		now: number,
-		fields: Pick<SteeringTargetStatus, "reason" | "replacementRunId"> = {},
+		fields: Pick<SteeringTargetStatus, "reason" | "replacementRunId" | "failureKind"> = {},
 	): SteeringTargetStatus | undefined => {
 		const updated = updateSteeringTarget(steeringStatus(statusPayload), requestId, index, state, now, fields);
 		const step = statusPayload.steps[index];
@@ -2953,13 +2961,14 @@ export async function runSubagent(
 		writeStatusPayload();
 	};
 	/** Record the outcome of handing a routed steer to the live child session. */
-	const applySteerDelivery = (requestId: string, index: number, delivery: { state: "delivered" | "queued" | "failed"; message: string }): void => {
+	const applySteerDelivery = (requestId: string, index: number, delivery: SteerDelivery): void => {
 		const lifecycle = steeringStatus(statusPayload);
 		const request = lifecycle.recent.find((candidate) => candidate.id === requestId);
 		const target = request?.targets.find((candidate) => candidate.index === index);
 		if (!request || !target) return;
-		if (target.state === "delivered" || target.state === "late" || target.state === "failed") return;
-		if (target.state === delivery.state) return;
+		if (target.state === "delivered" || target.state === "late") return;
+		if (target.state === "failed" && !(target.failureKind === "unconsumed" && delivery.failureKind === "rejected")) return;
+		if (target.state === delivery.state && target.failureKind === delivery.failureKind) return;
 		const late = fs.existsSync(steeringMarkerPath(requestId));
 		const now = Date.now();
 		if (delivery.state === "delivered") {
@@ -2970,7 +2979,7 @@ export async function runSubagent(
 			emitSteeringEvent("subagent.steer.queued", { type: "steer", id: requestId, ts: now, message: delivery.message }, index, { deliveryStatus: "queued", message: delivery.message });
 		} else {
 			markSteeringAttention(index);
-			updateSteeringLifecycleTarget(requestId, index, "failed", now, { reason: delivery.message });
+			updateSteeringLifecycleTarget(requestId, index, "failed", now, { reason: delivery.message, failureKind: delivery.failureKind ?? "rejected" });
 			emitSteeringEvent("subagent.steer.failed", { type: "steer", id: requestId, ts: now, message: delivery.message }, index, { reason: delivery.message });
 		}
 		emitTerminalSteeringNotice(requestId, `Steering failed for run ${id}: ${delivery.message}`);
@@ -4918,7 +4927,7 @@ export async function runSubagent(
 			if (target.state !== "scheduled" && target.state !== "routed" && target.state !== "queued") continue;
 			changed = true;
 			const reason = target.state === "queued" ? unconsumedSteerReason() : "child terminated before steering delivery";
-			updateSteeringLifecycleTarget(request.id, target.index, "failed", Date.now(), { reason });
+			updateSteeringLifecycleTarget(request.id, target.index, "failed", Date.now(), { reason, failureKind: "unconsumed" });
 			markSteeringAttention(target.index);
 			emitSteeringEvent("subagent.steer.failed", { type: "steer", id: request.id, ts: request.requestedAt, message: reason }, target.index, { reason });
 		}

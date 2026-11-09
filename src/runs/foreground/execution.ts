@@ -41,6 +41,8 @@ import {
 	detectSubagentError,
 	hasEmptyTerminalAssistantResponse,
 	formatEmptyTerminalAssistantResponseError,
+	getTerminalAssistantStopReason,
+	TRUNCATED_RESPONSE_ERROR,
 	extractToolArgsPreview,
 	assistantMessageError,
 	extractTextFromContent,
@@ -1478,12 +1480,12 @@ async function runSingleAttempt(
 				const steer = created.steer.bind(created);
 				const followUp = created.followUp.bind(created);
 				created.steer = async (text) => {
+					await steer(text);
 					if (cleanTerminalAssistantStopReceived || agentSettledReceived) queuedDrainHold = true;
-					return steer(text);
 				};
 				created.followUp = async (text) => {
+					await followUp(text);
 					if (cleanTerminalAssistantStopReceived || agentSettledReceived) queuedDrainHold = true;
-					return followUp(text);
 				};
 				created.detached = detached;
 				unsubscribe = created.subscribe((event) => processEvent(event as Parameters<typeof processEvent>[0]));
@@ -1603,6 +1605,9 @@ async function runSingleAttempt(
 			result.error = errInfo.details
 				? `${errInfo.errorType} failed (exit ${errInfo.exitCode}): ${errInfo.details}`
 				: `${errInfo.errorType} failed with exit code ${errInfo.exitCode}`;
+		} else if (!validatedStructuredOutput && getTerminalAssistantStopReason(messages) === "length") {
+			result.exitCode = 1;
+			result.error = TRUNCATED_RESPONSE_ERROR;
 		}
 	}
 
