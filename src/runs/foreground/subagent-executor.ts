@@ -349,6 +349,8 @@ export interface SubagentParamsLike {
 	/** Internal workflow ownership metadata; not part of the public schema. */
 	workflowParentRunId?: string;
 	workflowKey?: string;
+	/** Workflow child's `runs.run` label, trimmed; names the child's own session instead of a task excerpt. */
+	label?: string;
 	lane?: import("../../shared/types.ts").WorkflowLaneMetadata;
 	/** Set by the scheduler so this run's completion can name the schedule that produced it. */
 	scheduleOrigin?: ScheduleOrigin;
@@ -3753,6 +3755,8 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			runFanoutBudget: data.runFanoutBudget,
 			parentWorkflowRunId: params.workflowParentRunId,
 			workflowKey: params.workflowKey,
+			// Top-level calls pass unknown keys through; only a workflow child's label is normalized.
+			label: params.workflowParentRunId !== undefined ? params.label : undefined,
 			lane: params.lane,
 			workflowAwaitAsync: params.workflowAwaitAsync,
 		}));
@@ -3859,6 +3863,20 @@ function writeWorkflowAggregateOutput(outputPath: string | undefined, text: stri
 		if (producedChildOutputPaths.has(resolveWorkflowHostOutputClaimPath(outputPath))) return undefined;
 		fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 		fs.writeFileSync(outputPath, text, "utf-8");
+		return undefined;
+	} catch (error) {
+		return `Output file error: ${outputPath}\n${error instanceof Error ? error.message : String(error)}`;
+	}
+}
+
+/**
+ * Runs once as the script starts, never at the end: another run sharing the path may publish its report meanwhile,
+ * and a failing run must not delete it.
+ */
+function removeEarlierWorkflowOutput(outputPath: string | undefined): string | undefined {
+	if (!outputPath) return undefined;
+	try {
+		fs.rmSync(outputPath, { force: true });
 		return undefined;
 	} catch (error) {
 		return `Output file error: ${outputPath}\n${error instanceof Error ? error.message : String(error)}`;
@@ -4441,6 +4459,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			runFanoutBudget: params.runFanoutAdmitted ? data.runFanoutBudget : { ...data.runFanoutBudget, parentPath: `${data.runFanoutBudget.parentPath ? `${data.runFanoutBudget.parentPath}/` : ""}single` },
 			cwd: singleCwd,
 			requestedCwd: data.requestedCwd,
+			label: params.workflowParentRunId !== undefined ? params.label : undefined,
 			signal,
 			abortedAsStopped: params.workflowParentRunId !== undefined,
 			interruptSignal: interruptController.signal,
@@ -5251,6 +5270,10 @@ export function prepareWorkflowLaunchParams(
 		...(options.suppressRoutineResultIntercom ? { suppressRoutineResultIntercom: true } : {}),
 		...(capabilityCeiling ? { capabilityCeiling } : {}),
 	} as SubagentParamsLike;
+	// Scripts pass `label` unchecked; keep only a non-empty string so session naming can trust the field.
+	const label = typeof childParams.label === "string" ? childParams.label.trim() : "";
+	if (label) launchParams.label = label;
+	else delete launchParams.label;
 	if (launchParams.extensionBindings !== undefined) launchParams.extensionBindings = normalizeExtensionBindings(launchParams.extensionBindings)!.value;
 	const normalizedGate = normalizeGateParams(launchParams);
 	if (!normalizedGate.ok) throw new Error(normalizedGate.error);
@@ -6353,6 +6376,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						step.async = runId !== undefined && path.basename(runId) === runId && fs.existsSync(path.join(path.dirname(asyncDir), runId));
 						persist({ tolerateStatusWriteFailure: true });
 					};
+					// A relaunch never deletes: a child of the interrupted run, settled or still finishing when Pi exited, may have saved its report there, and a stale file is better than a lost one.
+					const earlierOutputWarning = workflowReuseSource ? undefined : removeEarlierWorkflowOutput(workflowAggregateOutputPath);
 					try {
 						const workflow = await runWorkflowScript({
 							script: workflowScript,
@@ -6520,8 +6545,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 										inheritedNestedRoute(deps)?.rootRunId,
 									);
 									preparedChildParams = childRequest;
-									const launchRefusal = await approveWorkflowChildLaunch(ctx, () => workflowChildLaunchArgs(workflowRunId, key, childRequest, childParams.agent, parentCwd, discoverWorkflowAgents), workflowSignal);
-									if (launchRefusal) return buildRequestedModeError(childRequest, launchRefusal);
+									const approval = await approveWorkflowChildLaunch(ctx, () => workflowChildLaunchArgs(workflowRunId, key, childRequest, childParams.agent, parentCwd, discoverWorkflowAgents), workflowSignal);
+									if ("refusal" in approval) return buildRequestedModeError(childRequest, approval.refusal);
+									// Assigned in place: the WeakMaps below are keyed on this object. A resume's task is its message, which stays as sent.
+									if (approval.task !== undefined && childRequest.action !== "resume") childRequest.task = approval.task;
 									if (workflowUsageBudget.budget) workflowOwnedUsageBudgets.set(childRequest, workflowUsageBudget.budget);
 									if (workflowRequiredExtensions) workflowRetainedRequiredExtensions.set(childRequest, workflowRequiredExtensions);
 									workflowLaunchObservers.set(childRequest, (launch) => {
@@ -6667,7 +6694,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const terminalSummary = `${status.state === "complete"
 							? "Workflow completed after detached child finished."
 							: errorPreview ?? (pauseForDetached ? "Workflow paused." : "Workflow failed.")}${stopCause ? ` ${WORKFLOW_RUNTIME_REPLACED_STOP_NOTICE}` : ""}${workflowOutputPathMappingSummary(partial.children)}${finalPreflightWarnings.length ? ` ${finalPreflightWarnings.join(" ")}` : ""}`;
-						const outputWarning = writeWorkflowAggregateOutput(workflowAggregateOutputPath, terminalSummary, producedChildOutputPaths);
+						// Only completion writes the declared file, so its existence never reads as a delivered report.
+						const outputWarning = status.state === "complete"
+							? writeWorkflowAggregateOutput(workflowAggregateOutputPath, terminalSummary, producedChildOutputPaths)
+							: earlierOutputWarning;
 						const resultSummary = appendWorkflowOutputWarning(terminalSummary, outputWarning);
 						const receiptState: WorkflowReceiptState = status.state === "complete" ? "complete" : status.state === "paused" ? "paused" : status.state === "stopped" ? "stopped" : "failed";
 						const terminalOutcome = workflowFailureTerminalOutcome(error, partial.children, usageBudgetState(workflowUsageBudget.budget, sumResultsCost(workflowResults)));
@@ -6733,7 +6763,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			const workflowHostSteps = new Map<string, HostStepNode>();
 			let liveWorkflow: NonNullable<Details["workflow"]> = { trace: [], emits: [], console: [], ...(workflowResource ? { resource: workflowResource.provenance } : {}) };
 			const childProgress = new Map<string, ReturnType<typeof workflowChildProgress>>();
-			const childLaunches = new Map<string, { agent: string; runId?: string }>();
+			const childLaunches = new Map<string, { agent: string; runId?: string; sessionFile?: string }>();
 			const blockingWorkflowChildren = new Set<string>();
 			let activityTimer: ReturnType<typeof setTimeout> | undefined;
 			let lastProgressAt = 0;
@@ -6748,6 +6778,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				const liveWorkflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "running", inventoryComplete: false, trace: liveWorkflow.trace, progress: childProgress, launches: childLaunches });
 				onUpdate?.(workflowProgressUpdate(foregroundWorkflowRunId, chatProgress, liveWorkflow, liveWorkflowChildren, workflowPreflight));
 			};
+			const earlierOutputWarning = removeEarlierWorkflowOutput(workflowAggregateOutputPath);
 			try {
 				const workflow = await runWorkflowScript({
 					script: requestParams.workflowScript,
@@ -6812,8 +6843,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 								inheritedNestedRoute(deps)?.rootRunId,
 							);
 							preparedChildParams = childRequest;
-							const launchRefusal = await approveWorkflowChildLaunch(ctx, () => workflowChildLaunchArgs(foregroundWorkflowRunId, key, childRequest, childParams.agent, ctx.cwd, discoverWorkflowAgents), workflowSignal);
-							if (launchRefusal) return buildRequestedModeError(childRequest, launchRefusal);
+							const approval = await approveWorkflowChildLaunch(ctx, () => workflowChildLaunchArgs(foregroundWorkflowRunId, key, childRequest, childParams.agent, ctx.cwd, discoverWorkflowAgents), workflowSignal);
+							if ("refusal" in approval) return buildRequestedModeError(childRequest, approval.refusal);
+							if (approval.task !== undefined && childRequest.action !== "resume") childRequest.task = approval.task;
 							if (workflowUsageBudget.budget) workflowOwnedUsageBudgets.set(childRequest, workflowUsageBudget.budget);
 							if (workflowRequiredExtensions) workflowRetainedRequiredExtensions.set(childRequest, workflowRequiredExtensions);
 							if (delegatedWorkflowPermit) {
@@ -6830,7 +6862,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 									(deps.state.blockingWorkflowChildren ??= new Set()).add(launch.runId);
 									blockingWorkflowChildren.add(launch.runId);
 								}
-								childLaunches.set(key, { agent: launch.agent, ...(launch.runId ? { runId: launch.runId } : {}) });
+								childLaunches.set(key, {
+									agent: launch.agent,
+									...(launch.runId ? { runId: launch.runId } : {}),
+									...(launch.sessionFile ? { sessionFile: launch.sessionFile } : {}),
+								});
 								// Telemetry must not decide the child's outcome, as with onTrace in scripted-workflow.
 								try {
 									sendWorkflowProgress();
@@ -6921,7 +6957,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				const finalPreflightTrace = annotateWorkflowPreflightTrace(partial.trace, workflowPreflight);
 				const trace = finalPreflightTrace.map((entry) => ({ line: `- ${entry.operation} ${entry.key}: ${entry.state}${entry.runId ? ` (${entry.runId})` : ""}${entry.warning ? ` — ${entry.warning}` : ""}`, error: entry.error }));
 				const outputMappings = workflowOutputPathMappingSummary(partial.children).trim();
-				const displayText = formatWorkflowResultText({
+				const displayText = appendWorkflowOutputWarning(formatWorkflowResultText({
 					head: workflowPreflight ? [formatWorkflowPreflight(workflowPreflight)] : [],
 					script: [
 						`Workflow failed: ${text}`,
@@ -6934,10 +6970,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						...(outputMappings ? [outputMappings] : []),
 					],
 					maxOutput: requestParams.maxOutput,
-					aggregateOutputPath: workflowAggregateOutputPath,
+					// A failed workflow's text never goes to the declared output file; truncated text goes to the full-result file.
+					aggregateOutputPath: undefined,
 					fullResultPath: workflowFullResultPath,
 					producedChildOutputPaths,
-				});
+				}), earlierOutputWarning);
 				const workflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "failed", inventoryComplete: true, trace: partial.trace, children: partial.children });
 				const terminalOutcome = workflowFailureTerminalOutcome(error, partial.children, usageBudgetState(workflowUsageBudget.budget, sumResultsCost(workflowResults)));
 				const receipt = terminalWorkflowReceipt(foregroundWorkflowRunId, "failed", partial.children, workflowChildren, terminalOutcome, [...workflowHostSteps.values()], workflowResource?.provenance, workflowArgsDigest);
@@ -8251,7 +8288,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			if (workflowLaunchObserver) {
 				const singleTask = hasTasks && effectiveParams.tasks?.length === 1 ? effectiveParams.tasks[0] : undefined;
 				const singleSessionName = hasSingle
-					? deriveChildSessionName({ agent: effectiveParams.agent!, task: effectiveParams.task })
+					? deriveChildSessionName({ agent: effectiveParams.agent!, task: effectiveParams.task, label: effectiveParams.label })
 					: singleTask
 						? deriveChildSessionName({ agent: singleTask.agent, task: singleTask.task })
 						: undefined;

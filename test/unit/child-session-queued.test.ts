@@ -33,6 +33,13 @@ describe("childSessionHasQueuedMessages", () => {
 	});
 });
 
+const memoryLaunch = { cwd: process.cwd(), storage: { kind: "memory" as const }, extensionPaths: [], ambientExtensions: false, hooks: [], noSkills: true, noContextFiles: true, runtime: { fanoutChild: false, depth: 1, waitTool: { enabled: false }, fast: false } as ChildSessionLaunch["runtime"] };
+const factoryOver = (session: unknown) => createDefaultChildSessionFactory({ loadPiCodingAgent: async () => ({
+	ModelRuntime: { create: async () => ({}) }, SettingsManager: { create: () => ({}) },
+	DefaultResourceLoader: class { async reload() {} }, SessionManager: { inMemory: () => ({}) },
+	resolveCliModel: () => ({}), createAgentSession: async () => ({ session }),
+} as unknown as PiCodingAgentModule) });
+
 describe("default factory queued-message probe", () => {
 	for (const [kind, body] of [
 		["valid", JSON.stringify({ criteriaSatisfied: [], commandsRun: [{ command: "npm test", result: "passed", summary: "All tests passed" }] })],
@@ -65,19 +72,13 @@ describe("default factory queued-message probe", () => {
 			abort: async () => { releaseTail(); }, steer: async () => { queued = true; }, followUp: async () => { queued = true; },
 			messages: [], sessionId: "completed-report",
 		};
-		const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => ({
-			ModelRuntime: { create: async () => ({}) }, SettingsManager: { create: () => ({}) },
-			DefaultResourceLoader: class { async reload() {} }, SessionManager: { inMemory: () => ({}) },
-			resolveCliModel: () => ({}), createAgentSession: async () => ({ session: underlying }),
-		} as unknown as PiCodingAgentModule) });
-		const child = await factory.create({ cwd: process.cwd(), storage: { kind: "memory" }, extensionPaths: [], ambientExtensions: false, hooks: [], noSkills: true, noContextFiles: true, runtime: { fanoutChild: false, depth: 1, waitTool: { enabled: false }, fast: false } as ChildSessionLaunch["runtime"] });
+		const factory = factoryOver(underlying);
+		const child = await factory.create(memoryLaunch);
 		const result = await runChildSession({ factory: { create: async () => child, dispose: () => factory.dispose() }, launch: { session: { hooks: [], runtime: {} }, capture: { finalDrainHeld: () => false } } as unknown as InProcessChildLaunch, prompt: "Implement", timeoutMessage: "timeout", registerTimeout(interrupt) { if (interrupt) timeout = setTimeout(interrupt, 2_000); else if (timeout) clearTimeout(timeout); }, appendChildEvent() {}, writeOutputLine() {}, registerSteer(handler) { steer = handler; }, onSteerOutcome(_request, outcome) { outcomes.push(`${outcome.state}: ${outcome.message}`); } });
 		assert.equal(result.finalOutput, report);
 		assert.equal(result.exitCode, 0, result.error);
 		assert.deepEqual(outcomes, ["failed: child completed before consuming follow-up"]);
 		assert.equal(child.hasQueuedMessages?.(), false);
-		await assert.rejects(child.steer("More guidance"), /acceptance report.*resume/i);
-		await assert.rejects(child.followUp("New work"), /acceptance report.*resume/i);
 	});
 	for (const mode of ["steer", "followUp"] as const) {
 		it(`rejects in-flight ${mode} at the agent queue after report closure`, async () => {
@@ -94,13 +95,9 @@ describe("default factory queued-message probe", () => {
 				async steer() { await inputHandler; agent.steer(); },
 				async followUp() { await inputHandler; agent.followUp(); },
 			};
-			const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => ({
-				ModelRuntime: { create: async () => ({}) }, SettingsManager: { create: () => ({}) },
-				DefaultResourceLoader: class { async reload() {} }, SessionManager: { inMemory: () => ({}) },
-				resolveCliModel: () => ({}), createAgentSession: async () => ({ session: underlying }),
-			} as unknown as PiCodingAgentModule) });
+			const factory = factoryOver(underlying);
 			try {
-				const child = await factory.create({ cwd: process.cwd(), storage: { kind: "memory" }, extensionPaths: [], ambientExtensions: false, hooks: [], noSkills: true, noContextFiles: true, runtime: { fanoutChild: false, depth: 1, waitTool: { enabled: false }, fast: false } as ChildSessionLaunch["runtime"] });
+				const child = await factory.create(memoryLaunch);
 				child.subscribe(() => {});
 				const submission = child[mode]("Guidance awaiting an input handler");
 				listener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: '```acceptance-report\n{"criteriaSatisfied":[],"commandsRun":[]}\n```' }], stopReason: "stop" } });
@@ -194,12 +191,12 @@ describe("default factory queued-message probe", () => {
 		assert.equal(modelResolved, false);
 	});
 
-	it("rejects a child whose required extension fails during session_start, but not one whose ordinary extension does", async () => {
+	it("rejects a child whose required extension fails during session_start, but not one whose ordinary extension does or whose MCP server nothing connects", async () => {
 		const requiredPath = "/tmp/required-policy.mjs";
 		const ordinaryPath = "/tmp/ordinary.mjs";
 		const reported: string[] = [];
 		const lifecycle: string[] = [];
-		const createFactory = (failingPath: string) => createDefaultChildSessionFactory({ loadPiCodingAgent: async () => ({
+		const createFactory = (failingPath: string, event = "session_start", error = "policy init failed") => createDefaultChildSessionFactory({ loadPiCodingAgent: async () => ({
 			ModelRuntime: { create: async () => ({ refresh: async () => {} }) },
 			SettingsManager: { create: () => ({}) },
 			DefaultResourceLoader: class { async reload() {} getExtensions() { return { extensions: [{ path: requiredPath, resolvedPath: requiredPath }, { path: ordinaryPath, resolvedPath: ordinaryPath }], errors: [], runtime: { pendingProviderRegistrations: [], pendingNativeProviderRegistrations: [] } }; } },
@@ -207,7 +204,7 @@ describe("default factory queued-message probe", () => {
 			resolveCliModel: () => ({}),
 			createAgentSession: async () => ({
 				session: {
-					bindExtensions: async ({ onError }: { onError: (error: { extensionPath: string; event: string; error: string }) => void }) => { onError({ extensionPath: failingPath, event: "session_start", error: "policy init failed" }); },
+					bindExtensions: async ({ onError }: { onError: (error: { extensionPath: string; event: string; error: string }) => void }) => { onError({ extensionPath: failingPath, event, error }); },
 					dispose() { lifecycle.push("dispose"); },
 					extensionRunner: { hasHandlers: (event: string) => event === "session_shutdown", emit: async ({ type }: { type: string }) => { lifecycle.push(type); } },
 					subscribe: () => () => {},
@@ -216,11 +213,12 @@ describe("default factory queued-message probe", () => {
 				},
 			}),
 		}) as unknown as PiCodingAgentModule });
-		const launch = { cwd: process.cwd(), storage: { kind: "memory" }, extensionPaths: [requiredPath, ordinaryPath], requiredExtensions: [{ id: "policy", path: requiredPath }], ambientExtensions: false, hooks: [], noSkills: true, noContextFiles: true, onExtensionError: ({ extensionPath, event }) => { if (event === "session_start") reported.push(extensionPath); }, runtime: { fanoutChild: false, depth: 1, waitTool: { enabled: false }, fast: false } as ChildSessionLaunch["runtime"] } satisfies ChildSessionLaunch;
+		const launch = { cwd: process.cwd(), storage: { kind: "memory" }, extensionPaths: [requiredPath, ordinaryPath], requiredExtensions: [{ id: "policy", path: requiredPath }], ambientExtensions: false, hooks: [], noSkills: true, noContextFiles: true, onExtensionError: ({ extensionPath, event }) => { if (extensionPath !== "<loader>") reported.push(`${extensionPath} ${event}`); }, runtime: { fanoutChild: false, depth: 1, waitTool: { enabled: false }, fast: false } as ChildSessionLaunch["runtime"] } satisfies ChildSessionLaunch;
 		await assert.rejects(() => createFactory(requiredPath).create(launch), /Required child extension failed during startup: \/tmp\/required-policy\.mjs \(session_start\): policy init failed/);
 		assert.deepEqual(lifecycle, ["session_shutdown", "dispose"]);
 		assert.ok(await createFactory(ordinaryPath).create(launch));
-		assert.deepEqual(reported, [requiredPath, ordinaryPath]);
+		assert.ok(await createFactory(requiredPath, "register_mcp_server", 'MCP server "demo" is registered, but no loaded extension connects MCP servers').create(launch));
+		assert.deepEqual(reported, [`${requiredPath} session_start`, `${ordinaryPath} session_start`, `${requiredPath} register_mcp_server`]);
 	});
 
 	it("reports no queued messages for an agent-less wrapped session", async () => {

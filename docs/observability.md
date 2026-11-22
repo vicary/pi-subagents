@@ -16,11 +16,7 @@ Long-open `bash` attention notices identify the exact tool call and include stat
 
 Live progress shows compact detail for single, chain, and parallel modes: a bounded one-line task, current tool, recent output, token counts, aggregate cost, duration, activity freshness, current-tool duration, and chain graph metadata when available. Workflow `label` metadata wins over raw task text in compact multi-child cards.
 
-While a child runs, the first line of its latest successful `contact_supervisor` `progress_update` shows as a `progress:` row under its task, with the time since the report. For example:
-
-```ts
-contact_supervisor({ reason: "progress_update", message: "[1/2] Reading the status projection tests" });
-```
+While a child runs, the first line of its latest successful `contact_supervisor` `progress_update` shows as a `progress:` row under its task, with the time since the report.
 
 Press Pi's configured expand key (`Ctrl+O` by default) to expand the full streaming view with complete output per step.
 
@@ -124,7 +120,7 @@ Default keys:
 - `↑`/`↓` or `j`/`k` — select a child
 - `K`/`J` (Shift+k / Shift+j) — scroll output one line
 - `PgUp`/`PgDn` — scroll output one body viewport page (structured headers stay pinned)
-- `x`/`Ctrl+O` — toggle tool details
+- `x`/`Ctrl+O` — toggle tool details, including the full `bash` command (multiline commands show every line)
 - `r` — refresh
 - `Esc` — close
 - `Enter` — open the selected inspectable async child through the available Inspect plugin
@@ -274,6 +270,8 @@ The reported `runtimeAcknowledgedExtensions` projection is `{ version: 1, source
 Lifecycle artifacts include `process-terminal-candidate.json` (private runner evidence) and `process-terminal.json` (the public proof projection).
 
 A proof is `observed` only after the live parent observes the exact detached runner's `close` event and any tracked canonical-session lease is free. Children run inside the runner process, so the candidate records no separate writer processes. If the observer is unavailable, the proof is `unknown`; do not infer process exit from `endedAt`, result-file existence, PID disappearance, or lease-directory absence.
+
+When a finished run's runner PID is confirmed dead and `process-terminal.json` is still `pending`, for example because the Pi that launched it has exited, a status read writes `process-terminal-unobserved.json` with an `unknown` proof (reason `observer-unavailable`). It never touches `process-terminal.json`; status readers report it only while `process-terminal.json` is still `pending` for the same runner, so a close that is observed later still wins.
 
 The `subagent:process-terminal` event and RPC `ping.capabilities.processTerminalProof` expose this status. Process proof is point-in-time evidence and remains separate from execution success or stopped/non-resumable state.
 

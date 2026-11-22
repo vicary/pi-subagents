@@ -21,7 +21,7 @@ import { getAgentDir, PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../shared/util
 import { resolvePackageSubpath } from "../background/runner-aliases.ts";
 import { PI_CODING_AGENT_PACKAGE, resolveHostPiPackageRoot } from "./pi-spawn.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
-import type { RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
+import { createRequiredChildExtensionIdentity, type RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
 import type { PlacementMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
 
 export interface ChildSessionEvent {
@@ -63,8 +63,8 @@ export interface ChildSessionLaunch {
 	projectTrusted?: boolean;
 	/** Process-local provider source owned by the invoking foreground parent. */
 	parentProviderRegistry?: ParentProviderRegistry;
-	/** Logical names resolved only by the remote ambient package. */
-	remoteResources?: { agent: string; skills?: string[]; toolCeiling?: string[]; reads?: string[] | false };
+	/** Logical names resolved only by the remote ambient package, plus the parent's acceptance instructions, which no remote file holds. */
+	remoteResources?: { agent: string; skills?: string[]; toolCeiling?: string[]; reads?: string[] | false; acceptancePrompt?: string };
 	storage: ChildSessionStorage;
 	/** The launching session's file, recorded as the new child session's `parentSession` header like Pi's forks. */
 	parentSessionFile?: string;
@@ -206,28 +206,6 @@ const CHILD_PROMPT_RUNTIME_EXTENSION_PATH = "<inline:pi-subagents:prompt-runtime
 const CHILD_PROMPT_BOUNDARY_EXTENSION_PATH = "<inline:pi-subagents:prompt-boundary>";
 /** Same class as UNICODE_SPACES in pi-coding-agent dist/utils/paths.js, which resolvePath(..., { normalizeUnicodeSpaces: true }) replaces with a space. */
 const PI_UNICODE_SPACES = new RegExp("[\\u00A0\\u2000-\\u200A\\u202F\\u205F\\u3000]", "g");
-
-function childExtensionFileIdentity(extensionPath: string): string | undefined {
-	if (!path.isAbsolute(extensionPath)) return undefined;
-	try {
-		const stat = fs.statSync(extensionPath, { bigint: true });
-		return stat.isFile() ? `${stat.dev}:${stat.ino}` : undefined;
-	} catch { return undefined; }
-}
-
-function createRequiredChildExtensionIdentity(requiredPaths: ReadonlySet<string>): (extensionPath: string) => string | undefined {
-	const aliases = new Map([...requiredPaths].map((extensionPath) => [extensionPath, childExtensionFileIdentity(extensionPath) ?? extensionPath]));
-	const identities = new Set(aliases.values());
-	return (extensionPath) => {
-		const known = aliases.get(extensionPath);
-		if (known !== undefined) return known;
-		const identity = childExtensionFileIdentity(extensionPath);
-		if (identity === undefined || !identities.has(identity)) return undefined;
-		// Retain the alias even if the extension removes its file before reporting a failure.
-		aliases.set(extensionPath, identity);
-		return identity;
-	};
-}
 
 /** The prompt runtime filters parent-only context before ambient extensions inspect
  *  the child prompt, and the boundary hook appends the child boundary after every
@@ -676,7 +654,8 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					await session.bindExtensions({
 						mode: "print",
 						onError: (error) => {
-							if (binding && isRequiredSource(error.extensionPath)) requiredStartupErrors.push(`${error.extensionPath} (${error.event}): ${error.error}`);
+							// Pi's unconnected-MCP-server report means the server's tools are outside this child's tool contract, which the child can run without.
+							if (binding && error.event !== "register_mcp_server" && isRequiredSource(error.extensionPath)) requiredStartupErrors.push(`${error.extensionPath} (${error.event}): ${error.error}`);
 							launch.onExtensionError?.({ extensionPath: error.extensionPath, event: error.event, error: error.error });
 						},
 					});
@@ -727,9 +706,9 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				try { await ready; } finally { mcpWaits.delete(cancel); }
 			}
 			let reportCompleted = false;
-			const assertAcceptsGuidance = (): void => {
-				if (reportCompleted) throw new Error("Child completed its acceptance report; resume it for further guidance.");
-			};
+			const guidanceClosed = "Child completed its acceptance report; resume it for further guidance.";
+			const assertAcceptsGuidance = (): void => { if (reportCompleted) throw new Error(guidanceClosed); };
+			const rejectQueuedGuidance = (): never => { session.clearQueue(); throw new Error(guidanceClosed); };
 			const child: ChildSession = {
 				subscribe: (listener) => session.subscribe((event) => {
 					if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "stop") {
@@ -738,10 +717,6 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 						if (report.report || report.malformed) {
 							reportCompleted = true;
 							session.clearQueue();
-							const rejectQueuedGuidance = (): never => {
-								session.clearQueue();
-								throw new Error("Child completed its acceptance report; resume it for further guidance.");
-							};
 							session.agent.steer = rejectQueuedGuidance;
 							session.agent.followUp = rejectQueuedGuidance;
 						}

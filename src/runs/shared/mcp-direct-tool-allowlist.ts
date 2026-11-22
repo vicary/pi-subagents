@@ -69,7 +69,7 @@ export interface McpRuntimeSnapshotHost {
 	getAllTools?(): readonly McpHostToolInfo[];
 	getCommands?(): readonly { name: string; sourceInfo: { path: string } }[];
 	/** Pi 0.99: servers extensions added with `pi.registerMcpServer()`. */
-	getMcpServers?(): readonly { name: string }[];
+	getMcpServers?(): readonly { name: string; extensionPath: string }[];
 }
 
 /** A `pi.getAllTools()` entry; `exposure` and `namespace` exist only from Pi 0.99. */
@@ -156,14 +156,6 @@ export function resolveMcpDirectToolResolution(
 	};
 }
 
-export function resolveMcpDirectToolSelections(
-	mcpDirectTools: string[] | undefined,
-	cwd = process.cwd(),
-	runtimeSnapshotHost?: McpRuntimeSnapshotHost,
-): ResolvedMcpDirectToolSelection[] {
-	return resolveMcpDirectToolResolution(mcpDirectTools, cwd, runtimeSnapshotHost).selections;
-}
-
 /**
  * pi-mcp-adapter keeps priority whenever it is loaded. 2.x registers /mcp, so Pi does not load its
  * built-in MCP. 3.x always registers /mcp-adapter and leaves /mcp to the built-in MCP.
@@ -216,11 +208,12 @@ export function formatUnresolvedBuiltinMcpSelectors(agentName: string | undefine
 
 /**
  * Selected servers that only an extension registered, which a child without ambient extensions
- * never has. A server of the same name in an `mcp.json` the child reads takes precedence; like Pi,
- * the project file is read only when the project is trusted.
+ * never has unless the registering extension is one the child loads (`loadedByChild`). A server of
+ * the same name in an `mcp.json` the child reads takes precedence; like Pi, the project file is read
+ * only when the project is trusted.
  */
-export function extensionOnlyMcpServers(selections: readonly ResolvedMcpDirectToolSelection[], host: McpRuntimeSnapshotHost, cwd: string, projectTrusted: boolean): string[] {
-	const registered = new Set(host.getMcpServers?.().map(({ name }) => name));
+export function extensionOnlyMcpServers(selections: readonly ResolvedMcpDirectToolSelection[], host: McpRuntimeSnapshotHost, cwd: string, projectTrusted: boolean, loadedByChild: (extensionPath: string) => boolean): string[] {
+	const registered = new Set(host.getMcpServers?.().filter(({ extensionPath }) => !loadedByChild(extensionPath)).map(({ name }) => name));
 	const servers = [...new Set(selections.map(({ selector }) => selector.split("/")[0]!))].filter((server) => registered.has(server));
 	if (servers.length === 0) return [];
 	const files = [path.join(getAgentDir(), "mcp.json"), ...(projectTrusted ? [path.join(cwd, ".pi", "mcp.json")] : [])];
@@ -414,13 +407,8 @@ function mergeServerDefinitions(base: Record<string, ServerEntry>, next: Record<
 	const servers = { ...base };
 	for (const [name, definition] of Object.entries(next)) {
 		const previous = base[name];
-		if (!previous) {
-			servers[name] = definition;
-		} else if (Object.keys(definition).every((key) => key === "disabled")) {
-			servers[name] = { ...previous, ...definition };
-		} else {
-			servers[name] = { ...(previous.disabled !== undefined ? { disabled: previous.disabled } : {}), ...definition };
-		}
+		if (previous && Object.keys(definition).every((key) => key === "disabled")) servers[name] = { ...previous, ...definition };
+		else servers[name] = previous?.disabled === undefined ? definition : { disabled: previous.disabled, ...definition };
 	}
 	return servers;
 }
@@ -467,10 +455,6 @@ function extractServers(config: unknown, kind: ImportKind): Record<string, Serve
 	return parseServerEntries(servers);
 }
 
-export function resolveMcpDirectToolNames(mcpDirectTools: string[] | undefined, cwd = process.cwd()): string[] {
-	return resolveMcpDirectToolSelections(mcpDirectTools, cwd).map((selection) => selection.name);
-}
-
 function validateSelectedServerDefinitions(config: McpConfig, selectors: string[]): void {
 	const { servers, tools } = parseMcpDirectToolSelectors(selectors);
 	for (const serverName of new Set([...servers, ...tools.keys()])) {
@@ -514,6 +498,7 @@ export function computeMcpServerHash(definition: ServerEntry): string {
 		includeTools: definition.includeTools,
 		excludeTools: definition.excludeTools,
 		protocolVersion: definition.protocolVersion,
+		...(definition.openUi === false ? { openUi: false } : {}),
 	};
 	return createHash("sha256").update(stableStringify(identity)).digest("hex");
 }

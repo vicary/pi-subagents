@@ -444,6 +444,8 @@ Forces depth-0 internal single, parallel, and chain runs into background mode an
 
 Global default runtime deadline, in milliseconds, for foreground launches (single, parallel, chain, and workflow scripts) and plain single-agent async runs whenever no call-level `timeoutMs`/`maxRuntimeMs` applies. Without a configured or explicit deadline, these runs have no runtime deadline. For single-agent launches, selected agent frontmatter `timeoutMs` still wins. This only moves the *default*. Expiring this run-level deadline is terminal.
 
+A run's deadline does not count time a child spends waiting for its supervisor's reply to a `contact_supervisor` decision or interview, or to an `intercom` ask; `progress_update` does not pause it, and the overall deadline of a workflow script stays wall-clock.
+
 This deadline bounds the whole run. The wait for a single model response is bounded separately by Pi's `httpIdleTimeoutMs` setting (default 300000; `0` disables it), which Pi applies both as the SDK request timeout and as the undici header/body idle timeout. Detached async runners read the same setting from `~/.pi/agent/settings.json` and the project `.pi/settings.json` for their own HTTP dispatcher, so a local model that queues or prefills for longer than five minutes needs `httpIdleTimeoutMs` raised or disabled in Pi settings, and any configured run deadline must also allow enough time.
 
 Use it when foreground orchestration or plain async single-agent runs need a default deadline. It does not set async composite top-level deadlines, and it does not replace async fan-out child deadlines.
@@ -665,6 +667,8 @@ Set `worktree` to `true` to make managed worktree isolation the default for laun
 ```
 
 The hook runs once per created worktree. Paths must be absolute, `~/...`, or repo-relative; bare command names are rejected.
+
+Before the hook runs, a new worktree gets a `node_modules` link to the main checkout's `node_modules` when one exists, so a worktree that installs nothing can still load its dependencies. A hook that installs dependencies must remove that link first, for example with `fs.rmSync(path.join(worktreePath, "node_modules"), { force: true })`. Otherwise the install writes through the link into the main checkout's `node_modules`.
 
 Setup command waits are nonblocking and cancellable through existing run controls. Existing run deadlines and the hook timeout still apply; there is no new setup timeout or configuration.
 

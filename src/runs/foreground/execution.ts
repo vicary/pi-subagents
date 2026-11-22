@@ -69,7 +69,7 @@ import { formatMidToolExitError, isOrdinaryToolForMidToolExit } from "../shared/
 import { formatChildToolDiagnostic } from "../shared/tool-availability.ts";
 import { formatChildModelResolutionDiagnostic, formatInheritedProviderDiagnostic, isChildModelResolutionFailure } from "../shared/model-resolution-diagnostic.ts";
 import { planAbortRecovery } from "../shared/abort-recovery.ts";
-import { buildTimeoutRecoverySummary, collectTrackedMutationEvidence, snapshotTrackedMutations } from "../shared/mutation-evidence.ts";
+import { buildTimeoutRecoverySummary, collectTrackedMutationEvidence, remoteMutationEvidence, remoteMutationSnapshot, snapshotTrackedMutations } from "../shared/mutation-evidence.ts";
 import { captureSingleOutputSnapshot, extractChildWrittenOutput, finalizeSingleOutput, formatSavedOutputReference, hasSingleOutputChangedSinceSnapshot, isSettlementFatalOutputError, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	formatSubagentModelVerificationError,
@@ -108,7 +108,8 @@ import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../s
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
 import { clearProviderRetry, observeProviderDiagnostics, snapshotProviderDiagnostics } from "../../shared/provider-diagnostics.ts";
-import { isRexLocalMachine } from "../shared/rex-machine.ts";
+import { editsLocalDisk } from "../shared/rex-machine.ts";
+import { pauseForSupervisorWait, startPausableTimer, type PausableTimer } from "../shared/supervisor-wait-timer.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -346,7 +347,8 @@ function isCompleteUsageCounter(value: unknown): value is number {
 
 const STOPPED_BEFORE_COMPLETION_ERROR = "Subagent stopped before completion.";
 const AFTER_COMPACTION_SETTLEMENT = Symbol("afterCompactionSettlement");
-type AbortRecoverySingleResult = SingleResult & { [AFTER_COMPACTION_SETTLEMENT]?: true };
+const REMAINING_TIMEOUT_MS = Symbol("remainingTimeoutMs");
+type AbortRecoverySingleResult = SingleResult & { [AFTER_COMPACTION_SETTLEMENT]?: true; [REMAINING_TIMEOUT_MS]?: number };
 
 
 async function runSingleAttempt(
@@ -372,7 +374,7 @@ async function runSingleAttempt(
 		verifyModel: boolean;
 		providerDiagnostics?: SingleResult["providerDiagnostics"];
 	},
-): Promise<SingleResult> {
+): Promise<AbortRecoverySingleResult> {
 	const effectiveThinking = options.thinkingOverride ?? agent.thinking;
 	const modelArg = applyThinkingSuffix(model, effectiveThinking, options.thinkingOverride !== undefined);
 	assertThinkingWithinCeiling({ model: modelArg, configThinking: effectiveThinking, ceiling: options.thinkingCeiling, agent: agent.name, runId: options.runId });
@@ -381,7 +383,7 @@ async function runSingleAttempt(
 	// Display name for the child session: applied inside the child through its
 	// runtime config and echoed back on the result payload so hosts can label
 	// this run without reading the child's session file.
-	const childSessionName = deriveChildSessionName({ agent: agent.name, task: shared.originalTask ?? task });
+	const childSessionName = deriveChildSessionName({ agent: agent.name, task: shared.originalTask ?? task, label: options.label });
 	const watchdogConfig = resolveWatchdogConfig(options.cwd ?? runtimeCwd);
 	const childWatchdog = watchdogConfig.ok
 		? resolveChildWatchdogConfig({
@@ -400,6 +402,7 @@ async function runSingleAttempt(
 		machine: options.machine,
 		remoteSkillNames: options.skills ?? agent.skills,
 		remoteReads: options.remoteReads,
+		acceptancePrompt: shared.acceptancePrompt,
 		extensionBindings: options.extensionBindings,
 		requiredExtensions: options.requiredExtensions,
 		sessionEnabled: shared.sessionEnabled,
@@ -473,7 +476,7 @@ async function runSingleAttempt(
 		...(options.structuredOutput ? { structuredOutputSchema: options.structuredOutput.schema } : {}),
 		...(options.extensionBindings ? { extensionBindings: options.extensionBindings } : {}),
 	});
-	const result: SingleResult = withRunContext({
+	const result: AbortRecoverySingleResult = withRunContext({
 		index: options.index ?? 0,
 		agent: agent.name,
 		task: shared.originalTask ?? task,
@@ -519,6 +522,7 @@ async function runSingleAttempt(
 		index: options.index ?? 0,
 		agent: agent.name,
 		...(childSessionName ? { sessionName: childSessionName } : {}),
+		...(options.sessionFile ? { sessionFile: options.sessionFile } : {}),
 		status: "running",
 		task,
 		skills: shared.resolvedSkillNames,
@@ -559,13 +563,14 @@ async function runSingleAttempt(
 		return result;
 	}
 	// A machine 'local' child edits this disk, so its local Git evidence is authoritative, as for an unplaced run.
-	const mutationCwd = isRexLocalMachine(options.machine) ? options.machine.cwd : options.cwd ?? runtimeCwd;
-	const mutationSnapshot = options.machine && !isRexLocalMachine(options.machine) ? { source: "tracked-files" as const, trackedOnly: true as const, cwd: mutationCwd, dirtyFiles: [], fingerprints: {}, unavailable: "Local Git evidence is not authoritative for a pane-native remote run." } : snapshotTrackedMutations(mutationCwd);
+	const mutationCwd = editsLocalDisk(options.machine) ? options.machine.cwd : options.cwd ?? runtimeCwd;
+	const mutationSnapshot = options.machine && !editsLocalDisk(options.machine) ? remoteMutationSnapshot(mutationCwd) : snapshotTrackedMutations(mutationCwd);
 	let structuredOutputToolInvoked = false;
 	let structuredOutputMessageStartIndex: number | undefined;
 	let toolAvailabilityError: string | undefined;
 	let abortedBySignal = options.signal?.aborted === true;
 	let afterCompactionSettlement = false;
+	let remainingTimeoutMs: number | undefined;
 
 	if (options.workflowChildPermitLaunch) {
 		const permitError = consumeWorkflowChildPermit(options.workflowChildPermitLaunch.permit, {
@@ -602,11 +607,12 @@ async function runSingleAttempt(
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
-		let timeoutTimer: NodeJS.Timeout | undefined;
+		let timeoutTimer: PausableTimer | undefined;
 		let timeoutHardFinishTimer: NodeJS.Timeout | undefined;
 		const clearTimeoutTimers = () => {
 			if (timeoutTimer) {
-				clearTimeout(timeoutTimer);
+				remainingTimeoutMs = timeoutTimer.remainingMs();
+				timeoutTimer.clear();
 				timeoutTimer = undefined;
 			}
 			if (timeoutHardFinishTimer) {
@@ -1104,6 +1110,7 @@ async function runSingleAttempt(
 			progress.durationMs = now - startTime;
 			progress.lastActivityAt = now;
 			updateActivityState(now);
+			pauseForSupervisorWait(timeoutTimer, evt);
 
 			if (evt.type === "tool_execution_start") {
 				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
@@ -1267,7 +1274,7 @@ async function runSingleAttempt(
 		}
 
 		if (attemptTimeout) {
-			timeoutTimer = setTimeout(() => {
+			timeoutTimer = startPausableTimer(attemptTimeout.remainingMs, () => {
 				if (sessionSettled || lifecycleFinished || interruptedByControl || result.timedOut) return;
 				result.timedOut = true;
 				timeoutCause = attemptTimeout.message;
@@ -1284,8 +1291,7 @@ async function runSingleAttempt(
 					settle(undefined, true);
 				}, 4000);
 				timeoutHardFinishTimer.unref?.();
-			}, attemptTimeout.remainingMs);
-			timeoutTimer.unref?.();
+			});
 		}
 
 		let toolTimeoutSequence = 0;
@@ -1320,7 +1326,7 @@ async function runSingleAttempt(
 		};
 		const terminateForToolTimeout = (message: string): void => {
 			if (sessionSettled || lifecycleFinished || interruptedByControl || result.timedOut) return;
-			clearTimeout(timeoutTimer);
+			timeoutTimer?.clear();
 			result.timedOut = true;
 			timeoutCause = message;
 			result.error = message;
@@ -1339,9 +1345,6 @@ async function runSingleAttempt(
 		const armToolTimeout = (event: { toolCallId?: unknown; toolName: string }): void => {
 			const timeoutForTool = effectiveToolTimeoutMs(event.toolName, options.toolTimeoutMs);
 			if (timeoutForTool === undefined) return;
-			const elapsed = Date.now() - startTime;
-			const runRemaining = attemptTimeout ? Math.max(0, attemptTimeout.remainingMs - elapsed) : undefined;
-			if (runRemaining !== undefined && timeoutForTool >= runRemaining) return;
 			const key = toolTimeoutCallKey(event, ++toolTimeoutSequence);
 			const toolName = event.toolName;
 			const timer = setTimeout(() => {
@@ -1531,9 +1534,8 @@ async function runSingleAttempt(
 	result.exitCode = exitCode;
 	result.providerDiagnostics = clearProviderRetry(result.providerDiagnostics);
 	progress.providerDiagnostics = result.providerDiagnostics;
-	if (afterCompactionSettlement) {
-		(result as AbortRecoverySingleResult)[AFTER_COMPACTION_SETTLEMENT] = true;
-	}
+	if (afterCompactionSettlement) result[AFTER_COMPACTION_SETTLEMENT] = true;
+	result[REMAINING_TIMEOUT_MS] = remainingTimeoutMs;
 	if (interruptedByControl) {
 		result.exitCode = 0;
 		result.interrupted = true;
@@ -1626,8 +1628,7 @@ async function runSingleAttempt(
 		tokens: progress.tokens,
 		durationMs: progress.durationMs,
 	};
-	const remoteGitChanged = result.nativeMachine?.initialGit && result.nativeMachine.finalGit ? result.nativeMachine.initialGit.head !== result.nativeMachine.finalGit.head || result.nativeMachine.initialGit.dirty !== result.nativeMachine.finalGit.dirty : undefined;
-	const mutationEvidence = result.nativeMachine && !isRexLocalMachine(options.machine) ? { source: "tracked-files" as const, trackedOnly: true as const, changedFiles: [], attemptedMutation: remoteGitChanged === true, ...(remoteGitChanged === undefined ? { unavailable: "Remote Git before/after evidence was incomplete." } : {}) } : await collectTrackedMutationEvidence(mutationSnapshot, mutationCwd);
+	const mutationEvidence = result.nativeMachine && !editsLocalDisk(options.machine) ? remoteMutationEvidence(result.nativeMachine) : await collectTrackedMutationEvidence(mutationSnapshot, mutationCwd);
 
 	const acceptanceOutput = getFinalOutput(result.messages ?? []);
 	const structuredText = result.structuredOutput === undefined ? undefined : JSON.stringify(result.structuredOutput, null, 2);
@@ -1733,7 +1734,7 @@ async function runSyncCompletionInner(
 ): Promise<SingleResult> {
 	const effectiveCwd = options.cwd ?? runtimeCwd;
 	// A placed child's cwd is a directory on its machine; only machine 'local' shares this disk.
-	const cwdError = options.machine && !isRexLocalMachine(options.machine) ? undefined : preflightLaunchCwd(options.requestedCwd ?? effectiveCwd, effectiveCwd);
+	const cwdError = options.machine && !editsLocalDisk(options.machine) ? undefined : preflightLaunchCwd(options.requestedCwd ?? effectiveCwd, effectiveCwd);
 	if (cwdError) {
 		return redactResultPrompt(withRunContext({
 			index: options.index ?? 0,
@@ -1749,7 +1750,7 @@ async function runSyncCompletionInner(
 		...options,
 		capabilityCeiling: intersectSubagentCapabilityCeilings(options.capabilityCeiling ?? resolveCurrentSubagentCapabilityCeiling(options.parentSessionId), options.childRuntime?.capabilityCeiling),
 	};
-	const childSessionName = deriveChildSessionName({ agent: agentName, task });
+	const childSessionName = deriveChildSessionName({ agent: agentName, task, label: options.label });
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) {
 		const diagnosticContext = options.unknownAgentDiagnosticContext
@@ -2024,10 +2025,13 @@ async function runSyncCompletionInner(
 			structuredOutputFailed: attemptResult.structuredOutputFailed,
 			acceptanceFailed: false,
 			currentTool: attemptResult.progress?.currentTool,
-			afterCompactionSettlement: (attemptResult as AbortRecoverySingleResult)[AFTER_COMPACTION_SETTLEMENT],
+			afterCompactionSettlement: attemptResult[AFTER_COMPACTION_SETTLEMENT],
 		});
 		if (recovery.action === "resume") {
 			recoveryPrompt = recovery.prompt;
+			// The retry gets the budget the first attempt left, so that attempt's supervisor waits stay uncounted.
+			const remainingMs = attemptResult[REMAINING_TIMEOUT_MS];
+			if (remainingMs !== undefined) attemptOptions.deadlineAt = Date.now() + remainingMs;
 			attemptNotes.push("[abort-recovery] compaction abort after useful progress; resuming the retained child session once on the same model.");
 			continue;
 		}

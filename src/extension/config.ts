@@ -232,9 +232,10 @@ function validateConfig(config: Record<string, unknown>): void {
 /**
  * Resolve the optional global default runtime deadline from extension config
  * (`config.timeoutMs`). Returns undefined for unset or invalid values so callers
- * use no configured deadline. "Invalid" covers non-positive-integer
- * values and values above the Node.js timer ceiling; the latter would overflow
- * the timer and expire the run almost immediately instead of running long.
+ * use no configured deadline. "Invalid" covers non-positive-integer values and
+ * values above the Node.js timer ceiling; an invalid value counts as unset, and
+ * above that ceiling a timer fires almost at once, expiring the run instead of
+ * running long.
  */
 export function resolveConfigDefaultTimeoutMs(raw: unknown): number | undefined {
 	if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0 || raw > 2_147_483_647) return undefined;
