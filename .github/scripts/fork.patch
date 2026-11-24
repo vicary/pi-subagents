@@ -12,10 +12,10 @@ index ec83220dd3500c55bd8f8ce5c4ccd1ed73a187af..c45e5d5b8460018a91cb9143570a2855
  | `acceptance` | Acceptance default for single-agent launches. Use a scalar level such as `checked` or an inline/block YAML map such as `{ level: "none", reason: "lightweight lookup" }`. Explicit call values win; chain and parallel acceptance remains task/step configuration. |
  | `acceptanceRole` | Optional `read-only` or `writer` role for automatic acceptance inference. When omitted, automatic acceptance uses lightweight attestation; task wording and agent names do not escalate it. This does not grant or revoke tools. |
 diff --git a/docs/configuration.md b/docs/configuration.md
-index 6f6b073540b60febfa7d2a5d585a6f15dfdd3bf1..a4916b1ee77f39acd678029aa85c73923d8e343c 100644
+index 63d466853bb556dd8fd508149b188fe46df07ccb..abd9cdf9ecd083036b6d45075a12edaa144b4146 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
-@@ -421,7 +421,7 @@ Adds a short `active_subagents` section to the parent's system prompt while this
+@@ -433,7 +433,7 @@ Adds a short `active_subagents` section to the parent's system prompt while this
  { "waitTool": { "enabled": true, "defaultTimeoutMs": 120000 } }
  ```
  
@@ -24,7 +24,7 @@ index 6f6b073540b60febfa7d2a5d585a6f15dfdd3bf1..a4916b1ee77f39acd678029aa85c7392
  
  
  Blocking `bg_wait({ id: "..." })` keeps the current tool call open until that run changes. By default it returns when a run needs attention, even when the run is still working normally, for example a `bash` command open longer than `activeNoticeAfterMs`; the result then says the run is still running. Use `bg_wait({ stopOnAttention: false })` for run-to-completion flows: it waits through idle time, a tool held open, or repeated tool failures, and still ends for a supervisor/contact request, a finished run, the timeout, user input, or abort. A steer or follow-up the operator sends while a blocking wait is open also ends it, with a non-error `user_input` result listing the still-active work, so the message reaches the model without waiting out the window. In a long-lived interactive parent session, `bg_wait({ id: "...", nonBlocking: true })` instead resolves the prefix once, persists the exact run identity, returns a subscription token immediately, and wakes that session on completion, failure, attention, reconciliation failure, or timeout. Use it for provider, detached, or other background work without a native completion notification; ordinary async subagent runs notify the parent natively and do not need a wait subscription. Armed subscriptions appear in ordinary `subagent({ action: "status" })` output and are not counted as active child work. A native completion notification goes to the Pi process that launched the run while that process is running; once it has exited, the session gets the result the next time it is open in any Pi. `nonBlocking` subscriptions need a host with a UI context, such as interactive or RPC mode; plain SDK embedding without a UI context rejects them.
-@@ -451,17 +451,15 @@ Forces depth-0 internal single, parallel, and chain runs into background mode an
+@@ -463,17 +463,15 @@ Forces depth-0 internal single, parallel, and chain runs into background mode an
  { "timeoutMs": 3600000 }
  ```
  
@@ -46,7 +46,7 @@ index 6f6b073540b60febfa7d2a5d585a6f15dfdd3bf1..a4916b1ee77f39acd678029aa85c7392
  
  ## `toolTimeoutMs`
  
-@@ -471,7 +469,7 @@ Composite async runs (async chains, parallel tasks, and scripted workflows) stay
+@@ -483,7 +481,7 @@ Composite async runs (async chains, parallel tasks, and scripted workflows) stay
  
  Optional hard per-tool-call deadline in milliseconds. When configured, a child that emits `tool_execution_start` but not `tool_execution_end` is terminated with `timedOut: true` and a tool-specific error. The effective value is resolved per child: explicit `subagent` call value, then agent frontmatter, then this config value, then `PI_SUBAGENT_TOOL_TIMEOUT_MS`.
  
@@ -108,10 +108,10 @@ index a2013309bdff2ee6d04f01f3c5abb54fde678bbe..7aef7c4e52f6e59f3f0f0eb9a1a8df4a
  const args = process.argv.slice(2);
  const isRemove = args.includes("--remove") || args.includes("-r");
 diff --git a/src/extension/config.ts b/src/extension/config.ts
-index c803c02949df15e0c269218c3fb6a6e25908adb9..dd51461e04acbcfd0d4b65801057b9d34f59542f 100644
+index 9f637e5f55af686ee3c158d558c67f78f450bec3..2a4f329ab97736a84c261395f7398450503ca01e 100644
 --- a/src/extension/config.ts
 +++ b/src/extension/config.ts
-@@ -232,7 +232,14 @@ function validateConfig(config: Record<string, unknown>): void {
+@@ -235,7 +235,14 @@ function validateConfig(config: Record<string, unknown>): void {
  	validateRunnerLaunchersConfig(config.runnerLaunchers);
  }
  
@@ -141,7 +141,7 @@ index 24f56b132e6981c2412faa972035d39f3ab04d9c..84b8dd3227d975b333122c129308b6d4
  	checkpointBeforeDeadlineMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647, description: "Async single-agent runs only: the runner requests that the child checkpoint and stop this many ms before the run deadline (best-effort; the deadline kill still applies)." })),
  	toolTimeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Per-tool deadline (ms); fast builtins default 5m." })),
 diff --git a/src/runs/background/async-execution.ts b/src/runs/background/async-execution.ts
-index b404fab9d7a2855aad41d8cdad7f34e5a696b609..ab1a57a8328630333f51be41a9361859d83a1076 100644
+index 1b2243a3bf2d9cbdf737a74a6ed0bc94b480a59c..d3db28fa907c6ddbb18ade5d6df4086dc4b2aed8 100644
 --- a/src/runs/background/async-execution.ts
 +++ b/src/runs/background/async-execution.ts
 @@ -206,7 +206,7 @@ function parentExtensionProviderForChild(ctx: AsyncExecutionContext, disableAmbi
@@ -153,7 +153,7 @@ index b404fab9d7a2855aad41d8cdad7f34e5a696b609..ab1a57a8328630333f51be41a9361859
  
  interface AsyncChainParams {
  	chain: ChainStep[];
-@@ -1346,7 +1346,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
+@@ -1352,7 +1352,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
  			outputMode: behavior.outputMode,
  			sessionFile,
  			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
@@ -198,7 +198,7 @@ index c18e204213bc47e9412111695e31c1e5b4d6ecb5..d5186f1867a7c517a66f32c0071abd6f
  				throw new Error(`Auto-drain timed out after ${timeoutMs}ms with background work still active in session '${sessionId}'.`);
  			}
 diff --git a/src/runs/foreground/subagent-executor.ts b/src/runs/foreground/subagent-executor.ts
-index b2cefce6b474bc5f050bdb65ceabb4d2bb2b0133..1c6e7e306fd1ab711f94cb472a6355e3bf805ad8 100644
+index 0c49cdfee7768ad7e2b9086d76e8d86f7eea49bc..05d7796ac9be31d0fb70993ea4dbd859aebae1e2 100644
 --- a/src/runs/foreground/subagent-executor.ts
 +++ b/src/runs/foreground/subagent-executor.ts
 @@ -50,7 +50,7 @@ import {
@@ -337,10 +337,10 @@ index 59714f77d60487cd4f8994ba93284e957bfc969c..3bd1f0372383362d5e43a2ed9fb0372e
  			const sessionFile = sourceManager.createBranchedSession(leafId);
  			if (!sessionFile) {
 diff --git a/src/shared/types.ts b/src/shared/types.ts
-index 38d49ebfb4211008515d2313e9403584d34dd694..ab5d5f276e25248d77a33969ebab8d8fbb31574e 100644
+index 78ee9c0d0c922331619ee20639d30005b5701ef3..135be46a53996c2180b67cf5c5137c5f8c5f2a8a 100644
 --- a/src/shared/types.ts
 +++ b/src/shared/types.ts
-@@ -2838,12 +2838,11 @@ export interface ExtensionConfig {
+@@ -2841,12 +2841,11 @@ export interface ExtensionConfig {
  	/** Global cap on simultaneously-running subagent tasks within a single run. Defaults to 20. */
  	globalConcurrencyLimit?: number;
  	/**
