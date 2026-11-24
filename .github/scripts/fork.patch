@@ -12,7 +12,7 @@ index ec83220dd3500c55bd8f8ce5c4ccd1ed73a187af..c45e5d5b8460018a91cb9143570a2855
  | `acceptance` | Acceptance default for single-agent launches. Use a scalar level such as `checked` or an inline/block YAML map such as `{ level: "none", reason: "lightweight lookup" }`. Explicit call values win; chain and parallel acceptance remains task/step configuration. |
  | `acceptanceRole` | Optional `read-only` or `writer` role for automatic acceptance inference. When omitted, automatic acceptance uses lightweight attestation; task wording and agent names do not escalate it. This does not grant or revoke tools. |
 diff --git a/docs/configuration.md b/docs/configuration.md
-index a0fa0f899dbdacafb9a8f0a2746d22c1a68c62cc..b0cc1af0860ca572f7a2bdce608c56eb0d49d62b 100644
+index 6f6b073540b60febfa7d2a5d585a6f15dfdd3bf1..a4916b1ee77f39acd678029aa85c73923d8e343c 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -421,7 +421,7 @@ Adds a short `active_subagents` section to the parent's system prompt while this
